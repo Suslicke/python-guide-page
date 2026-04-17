@@ -16,6 +16,7 @@ export default function PythonInterviewPrep() {
   const [quiz, setQuiz] = useState(null); // { ids: [...], idx, results: {easy,medium,hard}, answered: {id: rating} }
   const [query, setQuery] = useState("");
   const [activeCategory, setActiveCategory] = useState("all");
+  const [ratingFilter, setRatingFilter] = useState("all"); // all|bookmarked|easy|medium|hard|unrated
   const [storageReady, setStorageReady] = useState(false);
   const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
   // If analytics isn't configured in this build, no consent is needed → no banner
@@ -11996,20 +11997,29 @@ async def on_unexpected(request, exc: Exception):
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
+    const passRating = (id) => {
+      if (ratingFilter === "all") return true;
+      if (ratingFilter === "bookmarked") return !!bookmarks[id];
+      if (ratingFilter === "unrated") return !confidence[id];
+      return confidence[id] === ratingFilter; // easy|medium|hard
+    };
     return sections
       .map((sec, idx) => ({ ...sec, idx }))
       .filter((sec) => activeCategory === "all" || sec.cat === activeCategory)
       .map((sec) => ({
         ...sec,
-        items: sec.items.filter(
-          (it) =>
-            !q ||
+        items: sec.items.filter((it, i) => {
+          const id = `${sec.idx}-${i}`;
+          if (!passRating(id)) return false;
+          if (!q) return true;
+          return (
             it.q.toLowerCase().includes(q) ||
             it.a.toLowerCase().includes(q)
-        ),
+          );
+        }),
       }))
       .filter((sec) => sec.items.length > 0);
-  }, [query, activeCategory]);
+  }, [query, activeCategory, ratingFilter, bookmarks, confidence]);
 
   const matchCount = useMemo(
     () => filtered.reduce((n, s) => n + s.items.length, 0),
@@ -12279,6 +12289,66 @@ async def on_unexpected(request, exc: Exception):
               </div>
             </div>
           </div>
+
+          {/* Rating / bookmark filter chips */}
+          {(() => {
+            const allIds = sections.flatMap((sec, sIdx) => sec.items.map((_, i) => `${sIdx}-${i}`));
+            const count = (fn) => allIds.filter(fn).length;
+            const counts = {
+              all: allIds.length,
+              bookmarked: count((id) => !!bookmarks[id]),
+              easy: count((id) => confidence[id] === "easy"),
+              medium: count((id) => confidence[id] === "medium"),
+              hard: count((id) => confidence[id] === "hard"),
+              unrated: count((id) => !confidence[id]),
+            };
+            const chips = [
+              { k: "all", label: "All", style: "zinc" },
+              { k: "bookmarked", label: "⚑ Bookmarked", style: "amber" },
+              { k: "hard", label: "Hard", style: "red" },
+              { k: "medium", label: "Medium", style: "amber" },
+              { k: "easy", label: "Easy", style: "teal" },
+              { k: "unrated", label: "Unrated", style: "zinc" },
+            ];
+            return (
+              <div className="flex flex-wrap gap-1.5 items-center">
+                <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-medium mr-1">
+                  Filter:
+                </span>
+                {chips.map((c) => {
+                  const n = counts[c.k];
+                  const active = ratingFilter === c.k;
+                  const activeCls =
+                    c.style === "teal"
+                      ? "bg-teal-500/15 border-teal-500/60 text-teal-700 dark:text-teal-300"
+                      : c.style === "amber"
+                      ? "bg-amber-500/15 border-amber-500/60 text-amber-700 dark:text-amber-300"
+                      : c.style === "red"
+                      ? "bg-red-500/15 border-red-500/60 text-red-700 dark:text-red-300"
+                      : "bg-zinc-500/10 border-zinc-500/60 text-zinc-800 dark:text-zinc-100";
+                  const idleCls =
+                    "bg-[var(--bg-surface)] text-zinc-500 dark:text-zinc-500 border-zinc-200 dark:border-zinc-800 hover:text-zinc-800 dark:hover:text-zinc-200 hover:border-zinc-400 dark:hover:border-zinc-600";
+                  return (
+                    <button
+                      key={c.k}
+                      onClick={() => {
+                        setRatingFilter(c.k);
+                        trackEvent("rating_filter", { value: c.k });
+                      }}
+                      className={`text-[11px] uppercase tracking-wider px-2.5 py-1 rounded-md border transition font-medium inline-flex items-center gap-1.5 ${active ? activeCls : idleCls}`}
+                      disabled={c.k !== "all" && n === 0}
+                      title={c.k === "all" ? "Show everything" : `${n} item${n === 1 ? "" : "s"}`}
+                    >
+                      {c.label}
+                      <span className={`text-[10px] tabular-nums ${active ? "opacity-80" : "opacity-60"}`}>
+                        {n}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })()}
 
           {/* Category pills — horizontal scroll on small screens, wrap on large */}
           <div className="flex flex-nowrap md:flex-wrap gap-1.5 overflow-x-auto md:overflow-visible -mx-1 px-1 pb-0.5 md:pb-0">
@@ -12566,10 +12636,19 @@ async def on_unexpected(request, exc: Exception):
                     const conf = confidence[id]; // "easy"|"medium"|"hard"|undefined
                     const isRevealed = !!revealed[id];
                     const showAnswer = !blindMode || isRevealed;
+                    const leftAccent =
+                      conf === "easy"
+                        ? "rgb(20 184 166)"  // teal-500
+                        : conf === "medium"
+                        ? "rgb(245 158 11)"  // amber-500
+                        : conf === "hard"
+                        ? "rgb(239 68 68)"   // red-500
+                        : null;
                     return (
                       <div
                         key={i}
                         className="px-5 py-5 hover:bg-[rgb(var(--bg-hover-rgb)/0.5)] transition"
+                        style={leftAccent ? { boxShadow: `inset 3px 0 0 ${leftAccent}` } : undefined}
                       >
                         <div className="flex items-start gap-3">
                           <button
@@ -12592,6 +12671,20 @@ async def on_unexpected(request, exc: Exception):
                           </button>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-start gap-2 mb-2">
+                              {conf && (
+                                <span
+                                  className={`inline-flex items-center gap-1 text-[9px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded border mt-0.5 flex-shrink-0 ${
+                                    conf === "easy"
+                                      ? "bg-teal-500/15 border-teal-500/50 text-teal-700 dark:text-teal-300"
+                                      : conf === "medium"
+                                      ? "bg-amber-500/15 border-amber-500/50 text-amber-700 dark:text-amber-300"
+                                      : "bg-red-500/15 border-red-500/50 text-red-700 dark:text-red-300"
+                                  }`}
+                                  title={`You rated this ${conf}`}
+                                >
+                                  {conf}
+                                </span>
+                              )}
                               <h3
                                 className={`flex-1 font-semibold text-[15px] ${
                                   isChecked
