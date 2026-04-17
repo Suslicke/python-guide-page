@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef, createContext, useContext } from "react";
-import { ChevronRight, ChevronDown, Check, Search, BookOpen, Code2, Cpu, Database, Layers, Lightbulb, Zap, Target, AlertTriangle, Box, GitBranch, Flame, Brain, Terminal, Shield, Package, Sparkles, RotateCcw, X, Command, Cookie, User, Sun, Moon } from "lucide-react";
+import { ChevronRight, ChevronDown, Check, Search, BookOpen, Code2, Cpu, Database, Layers, Lightbulb, Zap, Target, AlertTriangle, Box, GitBranch, Flame, Brain, Terminal, Shield, Package, Sparkles, RotateCcw, X, Command, Cookie, User, Sun, Moon, Bookmark, BookmarkCheck, Eye, EyeOff, Play } from "lucide-react";
 import { trackEvent, setAnalyticsConsent, setAnalyticsUser } from "./analytics.js";
 
 // Shared across the app so deeply-nested markdown renderers can turn
@@ -9,6 +9,11 @@ const SectionNavContext = createContext(null);
 export default function PythonInterviewPrep() {
   const [openSections, setOpenSections] = useState({ 0: true });
   const [checked, setChecked] = useState({});
+  const [bookmarks, setBookmarks] = useState({}); // { [id]: true }
+  const [confidence, setConfidence] = useState({}); // { [id]: "easy"|"medium"|"hard" }
+  const [blindMode, setBlindMode] = useState(false);
+  const [revealed, setRevealed] = useState({}); // { [id]: true } — in blind mode
+  const [quiz, setQuiz] = useState(null); // { ids: [...], idx, results: {easy,medium,hard}, answered: {id: rating} }
   const [query, setQuery] = useState("");
   const [activeCategory, setActiveCategory] = useState("all");
   const [storageReady, setStorageReady] = useState(false);
@@ -125,30 +130,38 @@ export default function PythonInterviewPrep() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Load saved checkboxes on mount
+  // Load saved progress on mount (checks, bookmarks, confidence, blindMode)
   useEffect(() => {
+    const loadJson = (key) => {
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === "object" ? parsed : null;
+      } catch { return null; }
+    };
+    const c = loadJson("python-prep-checked");
+    if (c) setChecked(c);
+    const b = loadJson("python-prep-bookmarks");
+    if (b) setBookmarks(b);
+    const cf = loadJson("python-prep-confidence");
+    if (cf) setConfidence(cf);
     try {
-      const saved = localStorage.getItem("python-prep-checked");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed && typeof parsed === "object") {
-          setChecked(parsed);
-        }
-      }
-    } catch {
-      // corrupted or unavailable, ignore
-    } finally {
-      setStorageReady(true);
-    }
+      if (localStorage.getItem("python-prep-blind") === "1") setBlindMode(true);
+    } catch { /* ignore */ }
+    setStorageReady(true);
   }, []);
 
-  // Persist checkboxes (debounced) whenever they change
+  // Persist progress (debounced) whenever it changes
   useEffect(() => {
     if (!storageReady) return;
     setSaveState("saving");
     const t = setTimeout(() => {
       try {
         localStorage.setItem("python-prep-checked", JSON.stringify(checked));
+        localStorage.setItem("python-prep-bookmarks", JSON.stringify(bookmarks));
+        localStorage.setItem("python-prep-confidence", JSON.stringify(confidence));
+        localStorage.setItem("python-prep-blind", blindMode ? "1" : "0");
         setSaveState("saved");
         setTimeout(() => setSaveState("idle"), 1500);
       } catch {
@@ -156,18 +169,113 @@ export default function PythonInterviewPrep() {
       }
     }, 400);
     return () => clearTimeout(t);
-  }, [checked, storageReady]);
+  }, [checked, bookmarks, confidence, blindMode, storageReady]);
 
   const clearAll = () => {
     if (!window.confirm("Clear all progress? This cannot be undone.")) return;
     const before = Object.values(checked).filter(Boolean).length;
     setChecked({});
+    setBookmarks({});
+    setConfidence({});
+    setRevealed({});
     trackEvent("progress_cleared", { items_before: before });
     try {
       localStorage.removeItem("python-prep-checked");
+      localStorage.removeItem("python-prep-bookmarks");
+      localStorage.removeItem("python-prep-confidence");
     } catch {
       // ignore — state is already cleared locally
     }
+  };
+
+  const toggleBookmark = (id) => {
+    setBookmarks((b) => {
+      const next = { ...b };
+      if (next[id]) delete next[id]; else next[id] = true;
+      return next;
+    });
+    trackEvent("bookmark_toggle", { item_id: id });
+  };
+
+  const setItemConfidence = (id, value) => {
+    setConfidence((c) => {
+      const next = { ...c };
+      if (next[id] === value) delete next[id]; // click same → clear
+      else next[id] = value;
+      return next;
+    });
+    trackEvent("confidence_set", { item_id: id, value });
+  };
+
+  const toggleReveal = (id) => {
+    setRevealed((r) => {
+      const next = { ...r };
+      if (next[id]) delete next[id]; else next[id] = true;
+      return next;
+    });
+  };
+
+  const toggleBlindMode = () => {
+    setBlindMode((v) => {
+      const next = !v;
+      if (next) setRevealed({}); // entering blind mode → all hidden again
+      trackEvent("blind_mode_toggle", { enabled: next });
+      return next;
+    });
+  };
+
+  // Build a quiz pool of N items. Priority:
+  //   1. Items rated "hard" (weak spots)
+  //   2. Bookmarked items
+  //   3. Random items from the whole set
+  const startQuiz = (size = 10) => {
+    const allIds = [];
+    sections.forEach((sec, idx) => {
+      sec.items.forEach((_, i) => allIds.push(`${idx}-${i}`));
+    });
+    const hard = allIds.filter((id) => confidence[id] === "hard");
+    const booked = allIds.filter((id) => bookmarks[id] && confidence[id] !== "hard");
+    const rest = allIds.filter((id) => !hard.includes(id) && !booked.includes(id));
+    const shuffle = (a) => {
+      const arr = [...a];
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr;
+    };
+    const pool = [...shuffle(hard), ...shuffle(booked), ...shuffle(rest)].slice(0, size);
+    if (pool.length === 0) {
+      window.alert("No questions to quiz on yet — the content hasn't loaded.");
+      return;
+    }
+    setQuiz({ ids: pool, idx: 0, results: { easy: 0, medium: 0, hard: 0 }, answered: {} });
+    trackEvent("quiz_started", { size: pool.length });
+    // scroll to top
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const quizAnswer = (rating) => {
+    if (!quiz) return;
+    const currentId = quiz.ids[quiz.idx];
+    setItemConfidence(currentId, rating); // also persists to main state
+    const newResults = { ...quiz.results, [rating]: quiz.results[rating] + 1 };
+    const newAnswered = { ...quiz.answered, [currentId]: rating };
+    const nextIdx = quiz.idx + 1;
+    setQuiz({ ...quiz, results: newResults, answered: newAnswered, idx: nextIdx });
+    trackEvent("quiz_answer", { rating });
+  };
+
+  const exitQuiz = () => {
+    if (quiz) trackEvent("quiz_exited", { idx: quiz.idx, total: quiz.ids.length });
+    setQuiz(null);
+  };
+
+  // Helper — get item by "<secIdx>-<itemIdx>" id
+  const itemById = (id) => {
+    const [s, i] = id.split("-").map(Number);
+    const sec = sections[s];
+    return sec ? { sec, item: sec.items[i] } : null;
   };
 
   const toggle = (i) => setOpenSections((s) => ({ ...s, [i]: !s[i] }));
@@ -11995,14 +12103,38 @@ async def on_unexpected(request, exc: Exception):
               <Terminal size={14} />
               <span>Python Interview Prep · 2026</span>
             </div>
-            <button
-              onClick={toggleTheme}
-              className="flex-shrink-0 p-2 rounded-md border border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:border-zinc-400 dark:hover:border-zinc-600 transition"
-              aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-              title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-            >
-              {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
-            </button>
+            <div className="flex-shrink-0 flex items-center gap-1.5">
+              <button
+                onClick={() => startQuiz(10)}
+                className="p-2 rounded-md border border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-teal-700 dark:hover:text-teal-300 hover:border-teal-500/60 transition text-[10px] uppercase tracking-wider font-medium inline-flex items-center gap-1.5"
+                aria-label="Start quiz"
+                title="Quiz yourself on 10 items (weak + bookmarked first)"
+              >
+                <Play size={14} />
+                <span className="hidden sm:inline">Quiz</span>
+              </button>
+              <button
+                onClick={toggleBlindMode}
+                className={`p-2 rounded-md border transition text-[10px] uppercase tracking-wider font-medium inline-flex items-center gap-1.5 ${
+                  blindMode
+                    ? "border-teal-500/60 text-teal-700 dark:text-teal-300 bg-teal-500/10"
+                    : "border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:border-zinc-400 dark:hover:border-zinc-600"
+                }`}
+                aria-label={blindMode ? "Turn off blind mode" : "Turn on blind mode"}
+                title={blindMode ? "Blind mode ON — answers hidden" : "Blind mode — hide answers, think first"}
+              >
+                {blindMode ? <EyeOff size={14} /> : <Eye size={14} />}
+                <span className="hidden sm:inline">{blindMode ? "Blind" : "Blind"}</span>
+              </button>
+              <button
+                onClick={toggleTheme}
+                className="p-2 rounded-md border border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:border-zinc-400 dark:hover:border-zinc-600 transition"
+                aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+                title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+              >
+                {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
+              </button>
+            </div>
           </div>
           <h1
             className="text-4xl md:text-5xl font-bold text-zinc-900 dark:text-zinc-100 leading-[1.1] tracking-tight"
@@ -12173,7 +12305,141 @@ async def on_unexpected(request, exc: Exception):
         </div>
       </div>
 
+      {/* Quiz overlay — replaces normal content when active */}
+      {quiz && (() => {
+        const finished = quiz.idx >= quiz.ids.length;
+        if (finished) {
+          const { easy, medium, hard } = quiz.results;
+          const total = quiz.ids.length;
+          return (
+            <div className="max-w-3xl mx-auto px-6 py-10">
+              <div className="rounded-xl border border-teal-500/40 bg-teal-500/5 p-6">
+                <h2 className="text-2xl font-bold text-zinc-900 dark:text-zinc-100 mb-1" style={{ fontFamily: "'Georgia', serif" }}>
+                  Quiz complete
+                </h2>
+                <p className="text-zinc-600 dark:text-zinc-400 text-sm mb-6">
+                  You rated {total} question{total === 1 ? "" : "s"}. Ratings are saved — hit Quiz again to drill on the weak ones.
+                </p>
+                <div className="grid grid-cols-3 gap-3 mb-6">
+                  <div className="rounded-lg border border-teal-500/30 bg-teal-500/10 p-4 text-center">
+                    <div className="text-3xl font-bold text-teal-700 dark:text-teal-300 tabular-nums">{easy}</div>
+                    <div className="text-[11px] uppercase tracking-wider text-teal-700/80 dark:text-teal-300/80 mt-1">Easy</div>
+                  </div>
+                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-center">
+                    <div className="text-3xl font-bold text-amber-700 dark:text-amber-300 tabular-nums">{medium}</div>
+                    <div className="text-[11px] uppercase tracking-wider text-amber-700/80 dark:text-amber-300/80 mt-1">Medium</div>
+                  </div>
+                  <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-center">
+                    <div className="text-3xl font-bold text-red-700 dark:text-red-300 tabular-nums">{hard}</div>
+                    <div className="text-[11px] uppercase tracking-wider text-red-700/80 dark:text-red-300/80 mt-1">Hard</div>
+                  </div>
+                </div>
+                <div className="flex gap-2 flex-wrap">
+                  <button
+                    onClick={() => startQuiz(10)}
+                    className="inline-flex items-center gap-1.5 text-xs uppercase tracking-wider px-3 py-2 rounded-md bg-teal-500 text-zinc-900 hover:bg-teal-400 transition font-semibold"
+                  >
+                    <Play size={12} /> Another round
+                  </button>
+                  <button
+                    onClick={exitQuiz}
+                    className="inline-flex items-center gap-1.5 text-xs uppercase tracking-wider px-3 py-2 rounded-md border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 hover:border-zinc-500 transition"
+                  >
+                    Back to guide
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        }
+        const currentId = quiz.ids[quiz.idx];
+        const entry = itemById(currentId);
+        const isRev = !!revealed[currentId];
+        return (
+          <div className="max-w-3xl mx-auto px-6 py-8">
+            <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-[var(--bg-surface)] overflow-hidden">
+              {/* Header */}
+              <div className="flex items-center gap-3 px-5 py-3 border-b border-zinc-200 dark:border-zinc-800">
+                <div className="flex-1 text-[11px] uppercase tracking-wider text-zinc-500 font-medium">
+                  Quiz · Question {quiz.idx + 1} of {quiz.ids.length}
+                </div>
+                <div className="flex items-center gap-2 text-[11px] tabular-nums">
+                  <span className="text-teal-700 dark:text-teal-300">{quiz.results.easy}↑</span>
+                  <span className="text-amber-700 dark:text-amber-300">{quiz.results.medium}~</span>
+                  <span className="text-red-700 dark:text-red-300">{quiz.results.hard}↓</span>
+                </div>
+                <button
+                  onClick={exitQuiz}
+                  className="p-1 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition"
+                  aria-label="Exit quiz"
+                  title="Exit"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              {/* Progress bar */}
+              <div className="h-1 bg-zinc-100 dark:bg-zinc-900">
+                <div
+                  className="h-full bg-teal-500 transition-all"
+                  style={{ width: `${(quiz.idx / quiz.ids.length) * 100}%` }}
+                />
+              </div>
+              {/* Body */}
+              <div className="px-6 py-6">
+                {entry && (
+                  <div className="text-[11px] uppercase tracking-wider text-zinc-500 mb-3">
+                    {entry.sec.title}
+                  </div>
+                )}
+                <h2 className="text-zinc-900 dark:text-zinc-100 font-semibold text-lg leading-snug mb-4" style={{ fontFamily: "'Georgia', serif" }}>
+                  {entry?.item?.q || "(missing)"}
+                </h2>
+                {!isRev ? (
+                  <div className="py-8 flex flex-col items-center gap-3">
+                    <button
+                      onClick={() => toggleReveal(currentId)}
+                      className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-md bg-teal-500 text-zinc-900 hover:bg-teal-400 transition font-semibold"
+                    >
+                      <Eye size={14} /> Reveal answer
+                    </button>
+                    <span className="text-xs text-zinc-500">Think it through first. Then rate how well you knew it.</span>
+                  </div>
+                ) : (
+                  <div>
+                    <div className="text-zinc-700 dark:text-zinc-300 text-[14px] leading-relaxed mb-6">
+                      {entry && renderAnswer(entry.item.a)}
+                    </div>
+                    <div className="flex gap-2 flex-wrap pt-4 border-t border-zinc-200 dark:border-zinc-800">
+                      <button
+                        onClick={() => quizAnswer("easy")}
+                        className="flex-1 min-w-[100px] text-xs uppercase tracking-wider px-3 py-2 rounded-md bg-teal-500/15 border border-teal-500/50 text-teal-700 dark:text-teal-300 hover:bg-teal-500/25 transition font-semibold"
+                      >
+                        Easy
+                      </button>
+                      <button
+                        onClick={() => quizAnswer("medium")}
+                        className="flex-1 min-w-[100px] text-xs uppercase tracking-wider px-3 py-2 rounded-md bg-amber-500/15 border border-amber-500/50 text-amber-700 dark:text-amber-300 hover:bg-amber-500/25 transition font-semibold"
+                      >
+                        Medium
+                      </button>
+                      <button
+                        onClick={() => quizAnswer("hard")}
+                        className="flex-1 min-w-[100px] text-xs uppercase tracking-wider px-3 py-2 rounded-md bg-red-500/15 border border-red-500/50 text-red-700 dark:text-red-300 hover:bg-red-500/25 transition font-semibold"
+                      >
+                        Hard
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Content */}
+      {!quiz && (
+      <>
       <div className="max-w-6xl mx-auto px-6 py-8 space-y-3">
         {filtered.length === 0 && (
           <div className="text-center py-20">
@@ -12296,6 +12562,10 @@ async def on_unexpected(request, exc: Exception):
                   {sec.items.map((it, i) => {
                     const id = `${sec.idx}-${i}`;
                     const isChecked = !!checked[id];
+                    const isBookmarked = !!bookmarks[id];
+                    const conf = confidence[id]; // "easy"|"medium"|"hard"|undefined
+                    const isRevealed = !!revealed[id];
+                    const showAnswer = !blindMode || isRevealed;
                     return (
                       <div
                         key={i}
@@ -12321,18 +12591,86 @@ async def on_unexpected(request, exc: Exception):
                             )}
                           </button>
                           <div className="flex-1 min-w-0">
-                            <h3
-                              className={`font-semibold text-[15px] mb-2 ${
-                                isChecked
-                                  ? "line-through text-zinc-400 dark:text-zinc-600"
-                                  : "text-zinc-900 dark:text-zinc-100"
-                              }`}
-                            >
-                              {highlight(it.q, query)}
-                            </h3>
-                            <div className="text-zinc-700 dark:text-zinc-300 text-[14px] leading-relaxed">
-                              {renderAnswer(it.a)}
+                            <div className="flex items-start gap-2 mb-2">
+                              <h3
+                                className={`flex-1 font-semibold text-[15px] ${
+                                  isChecked
+                                    ? "line-through text-zinc-400 dark:text-zinc-600"
+                                    : "text-zinc-900 dark:text-zinc-100"
+                                }`}
+                              >
+                                {highlight(it.q, query)}
+                              </h3>
+                              <button
+                                onClick={() => toggleBookmark(id)}
+                                className={`flex-shrink-0 p-1 rounded transition ${
+                                  isBookmarked
+                                    ? "text-amber-500"
+                                    : "text-zinc-400 dark:text-zinc-600 hover:text-amber-500"
+                                }`}
+                                aria-label={isBookmarked ? "Remove bookmark" : "Bookmark"}
+                                title={isBookmarked ? "Bookmarked (click to remove)" : "Bookmark"}
+                              >
+                                {isBookmarked ? <BookmarkCheck size={16} /> : <Bookmark size={16} />}
+                              </button>
                             </div>
+                            {showAnswer ? (
+                              <div className="text-zinc-700 dark:text-zinc-300 text-[14px] leading-relaxed">
+                                {renderAnswer(it.a)}
+                              </div>
+                            ) : (
+                              <div className="py-4">
+                                <button
+                                  onClick={() => toggleReveal(id)}
+                                  className="inline-flex items-center gap-1.5 text-xs uppercase tracking-wider px-3 py-1.5 rounded-md border border-teal-700 text-teal-600 dark:text-teal-400 hover:bg-teal-500/10 transition"
+                                >
+                                  <Eye size={12} /> Reveal answer
+                                </button>
+                                <span className="ml-3 text-[11px] text-zinc-500">Think first, then peek.</span>
+                              </div>
+                            )}
+                            {/* Confidence rating — only visible when the answer is revealed */}
+                            {showAnswer && (
+                              <div className="mt-4 pt-3 border-t border-zinc-200 dark:border-zinc-800/60 flex flex-wrap items-center gap-2">
+                                <span className="text-[10px] uppercase tracking-wider text-zinc-500">
+                                  How well do you know it?
+                                </span>
+                                {[
+                                  { k: "easy", label: "Easy", color: "teal" },
+                                  { k: "medium", label: "Medium", color: "amber" },
+                                  { k: "hard", label: "Hard", color: "red" },
+                                ].map((o) => {
+                                  const active = conf === o.k;
+                                  const base = "text-[10px] uppercase tracking-wider px-2.5 py-1 rounded border transition font-medium";
+                                  const colorActive =
+                                    o.color === "teal"
+                                      ? "bg-teal-500/20 border-teal-500/50 text-teal-700 dark:text-teal-300"
+                                      : o.color === "amber"
+                                      ? "bg-amber-500/20 border-amber-500/50 text-amber-700 dark:text-amber-300"
+                                      : "bg-red-500/20 border-red-500/50 text-red-700 dark:text-red-300";
+                                  const colorIdle = "border-zinc-300 dark:border-zinc-700 text-zinc-500 hover:border-zinc-500 dark:hover:border-zinc-500";
+                                  return (
+                                    <button
+                                      key={o.k}
+                                      onClick={() => setItemConfidence(id, o.k)}
+                                      className={`${base} ${active ? colorActive : colorIdle}`}
+                                      title={`Mark "${o.label}"` + (active ? " (click again to clear)" : "")}
+                                    >
+                                      {o.label}
+                                    </button>
+                                  );
+                                })}
+                                {blindMode && isRevealed && (
+                                  <button
+                                    onClick={() => toggleReveal(id)}
+                                    className="ml-auto text-[11px] text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 flex items-center gap-1"
+                                    title="Hide again"
+                                  >
+                                    <EyeOff size={11} /> hide
+                                  </button>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -12372,6 +12710,8 @@ async def on_unexpected(request, exc: Exception):
           </ul>
         </div>
       </div>
+      </>
+      )}
 
       {/* Footer — author credit */}
       <footer className="border-t border-zinc-200 dark:border-zinc-800 mt-8">
