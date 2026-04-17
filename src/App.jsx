@@ -89,16 +89,16 @@ export default function PythonInterviewPrep() {
   const tick = (id) => setChecked((c) => ({ ...c, [id]: !c[id] }));
 
   const sections = [
-    // ============ EPAM MUST-HAVE ============
+    // ============ INTERVIEW MUST-HAVE ============
     {
       cat: "must",
       icon: <Flame size={18} />,
-      title: "⭐ EPAM Interview Must-Have — The Short List",
+      title: "⭐ Interview Must-Have — The Short List",
       level: "For Monday",
       items: [
         {
           q: "How to use this section",
-          a: `If you have **limited time**, focus here. These are the topics EPAM (and similar large consultancies) ask on almost every Python interview — Trainee through Senior. Everything below is a **quick reference / cheat sheet**. For deep dives, follow the pointers to the full sections.
+          a: `If you have **limited time**, focus here. These are the topics asked on almost every Python interview — Trainee through Senior. Everything below is a **quick reference / cheat sheet**. For deep dives, follow the pointers to the full sections.
 
 **Interview day plan:**
 1. Go through this list cold — if you stumble on anything, go to the full section and review
@@ -10460,7 +10460,7 @@ def withdraw(amount):
 
   const categories = [
     { id: "all", label: "Everything" },
-    { id: "must", label: "⭐ EPAM Must-Have" },
+    { id: "must", label: "⭐ Interview Must-Have" },
     { id: "basics", label: "Basics" },
     { id: "oop", label: "OOP" },
     { id: "advanced", label: "Advanced" },
