@@ -8,7 +8,10 @@ export default function PythonInterviewPrep() {
   const [activeCategory, setActiveCategory] = useState("all");
   const [storageReady, setStorageReady] = useState(false);
   const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
-  const [consent, setConsent] = useState("pending"); // pending | granted | denied
+  // If analytics isn't configured in this build, no consent is needed → no banner
+  const [consent, setConsent] = useState(() =>
+    import.meta.env.VITE_GA_ID ? "pending" : "denied"
+  );
   const searchRef = useRef(null);
 
   // Analytics consent — read stored choice on mount, replay it to gtag
