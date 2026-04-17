@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
-import { ChevronRight, ChevronDown, Check, Search, BookOpen, Code2, Cpu, Database, Layers, Lightbulb, Zap, Target, AlertTriangle, Box, GitBranch, Flame, Brain, Terminal, Shield, Package, Sparkles, RotateCcw, X, Command, Cookie } from "lucide-react";
+import { ChevronRight, ChevronDown, Check, Search, BookOpen, Code2, Cpu, Database, Layers, Lightbulb, Zap, Target, AlertTriangle, Box, GitBranch, Flame, Brain, Terminal, Shield, Package, Sparkles, RotateCcw, X, Command, Cookie, User } from "lucide-react";
+import { trackEvent, setAnalyticsConsent, setAnalyticsUser } from "./analytics.js";
 
 export default function PythonInterviewPrep() {
   const [openSections, setOpenSections] = useState({ 0: true });
@@ -12,22 +13,25 @@ export default function PythonInterviewPrep() {
   const [consent, setConsent] = useState(() =>
     import.meta.env.VITE_GA_ID ? "pending" : "denied"
   );
+  const [username, setUsername] = useState("");
   const searchRef = useRef(null);
 
-  // Analytics consent — read stored choice on mount, replay it to gtag
+  // Analytics consent — read stored choice on mount, replay it to gtag.
+  // Also read the saved username and push it into GA.
   useEffect(() => {
     try {
       const saved = localStorage.getItem("ga-consent");
       if (saved === "granted" || saved === "denied") {
         setConsent(saved);
-        if (typeof window.gtag === "function") {
-          window.gtag("consent", "update", {
-            analytics_storage: saved,
-          });
-        }
+        setAnalyticsConsent(saved);
+      }
+      const savedName = localStorage.getItem("user-name");
+      if (savedName) {
+        setUsername(savedName);
+        setAnalyticsUser(savedName);
       }
     } catch {
-      // localStorage unavailable (private mode, etc) — keep banner shown
+      // localStorage unavailable (private mode, etc) — keep defaults
     }
   }, []);
 
@@ -38,10 +42,36 @@ export default function PythonInterviewPrep() {
     } catch {
       // ignore — consent still applied in-memory for this session
     }
-    if (typeof window.gtag === "function") {
-      window.gtag("consent", "update", { analytics_storage: value });
+    setAnalyticsConsent(value);
+    trackEvent(value === "granted" ? "consent_granted" : "consent_denied");
+    // If a username was entered before consent, push it to GA now
+    if (value === "granted" && username) {
+      setAnalyticsUser(username);
     }
   };
+
+  // Persist username + forward to analytics. Called from the input.
+  const commitUsername = (value) => {
+    const clean = value.trim().slice(0, 64);
+    setUsername(clean);
+    try {
+      if (clean) localStorage.setItem("user-name", clean);
+      else localStorage.removeItem("user-name");
+    } catch {
+      // ignore
+    }
+    setAnalyticsUser(clean);
+    if (clean) trackEvent("username_set");
+  };
+
+  // Debounced search event — fires once ~800ms after typing stops
+  useEffect(() => {
+    if (!query.trim()) return;
+    const t = setTimeout(() => {
+      trackEvent("search", { search_term: query.trim() });
+    }, 800);
+    return () => clearTimeout(t);
+  }, [query]);
 
   // Global keyboard shortcuts: "/" or "⌘K"/"Ctrl+K" focus the search, Esc clears it
   useEffect(() => {
@@ -110,7 +140,9 @@ export default function PythonInterviewPrep() {
 
   const clearAll = () => {
     if (!window.confirm("Clear all progress? This cannot be undone.")) return;
+    const before = Object.values(checked).filter(Boolean).length;
     setChecked({});
+    trackEvent("progress_cleared", { items_before: before });
     try {
       localStorage.removeItem("python-prep-checked");
     } catch {
@@ -141,11 +173,21 @@ export default function PythonInterviewPrep() {
           return next;
         });
         setLastCheckedId(id);
+        trackEvent(target ? "questions_checked" : "questions_unchecked", {
+          method: "shift_range",
+          count: rangeIds.length,
+        });
         return;
       }
     }
+    const target = !checked[id];
     setChecked((c) => ({ ...c, [id]: !c[id] }));
     setLastCheckedId(id);
+    trackEvent(target ? "questions_checked" : "questions_unchecked", {
+      method: "single",
+      count: 1,
+      item_id: id,
+    });
   };
 
   // Toggle every item inside a section at once.
@@ -158,6 +200,17 @@ export default function PythonInterviewPrep() {
       for (const id of ids) next[id] = !allChecked;
       return next;
     });
+    trackEvent(!allChecked ? "questions_checked" : "questions_unchecked", {
+      method: "section",
+      count: ids.length,
+      section_title: sec.title,
+    });
+    if (!allChecked) {
+      trackEvent("section_completed", {
+        section_title: sec.title,
+        items: ids.length,
+      });
+    }
   };
 
   const sections = [
@@ -166,7 +219,7 @@ export default function PythonInterviewPrep() {
       cat: "must",
       icon: <Flame size={18} />,
       title: "⭐ Interview Must-Have — The Short List",
-      level: "For Monday",
+      level: "Must know",
       items: [
         {
           q: "How to use this section",
@@ -10698,15 +10751,36 @@ def withdraw(amount):
                 style={{ width: `${progress}%` }}
               />
             </div>
-            {checkedCount > 0 && (
-              <button
-                onClick={clearAll}
-                className="mt-3 inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-zinc-500 hover:text-red-400 border border-zinc-800 hover:border-red-900 rounded-md px-3 py-1.5 transition"
-              >
-                <RotateCcw size={12} />
-                Clear all progress
-              </button>
-            )}
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {checkedCount > 0 && (
+                <button
+                  onClick={clearAll}
+                  className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-zinc-500 hover:text-red-400 border border-zinc-800 hover:border-red-900 rounded-md px-3 py-1.5 transition"
+                >
+                  <RotateCcw size={12} />
+                  Clear all progress
+                </button>
+              )}
+              <div className="relative">
+                <User
+                  size={12}
+                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500"
+                />
+                <input
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  onBlur={(e) => commitUsername(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                  }}
+                  maxLength={64}
+                  placeholder="Your name (optional)"
+                  aria-label="Your name for the leaderboard"
+                  className="bg-[#1a1d22] border border-zinc-800 rounded-md pl-7 pr-2 py-1.5 text-[11px] text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-teal-600 transition w-48"
+                />
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -10780,7 +10854,13 @@ def withdraw(amount):
             {categories.map((c) => (
               <button
                 key={c.id}
-                onClick={() => setActiveCategory(c.id)}
+                onClick={() => {
+                  setActiveCategory(c.id);
+                  trackEvent("category_filter", {
+                    category_id: c.id,
+                    category_label: c.label,
+                  });
+                }}
                 className={`flex-shrink-0 text-[11px] uppercase tracking-wider px-3 py-1.5 rounded-md border transition font-medium ${
                   activeCategory === c.id
                     ? "bg-teal-500 text-zinc-900 border-teal-500 shadow-[0_0_0_3px_rgba(20,184,166,0.15)]"
@@ -10990,9 +11070,6 @@ def withdraw(amount):
             </li>
           </ul>
         </div>
-        <div className="text-center text-zinc-600 text-[11px] uppercase tracking-[0.25em] mt-8">
-          Good luck on Monday — you've got this.
-        </div>
       </div>
 
       {/* Footer — author credit */}
@@ -11034,8 +11111,10 @@ def withdraw(amount):
               We use cookies
             </h3>
             <p className="mt-1 text-zinc-400 text-[13px] leading-relaxed">
-              We use Google Analytics to understand how this guide is used.
-              No ads, no personal data. You can change your mind later.
+              We use Google Analytics to understand how this guide is used —
+              searches, sections reviewed, and general device info. If you
+              set a name, it's attached so you can see your own progress. No
+              ads. You can change your mind later.
             </p>
             <div className="mt-3 flex flex-wrap gap-2">
               <button
