@@ -1,6 +1,10 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect, useRef, createContext, useContext } from "react";
 import { ChevronRight, ChevronDown, Check, Search, BookOpen, Code2, Cpu, Database, Layers, Lightbulb, Zap, Target, AlertTriangle, Box, GitBranch, Flame, Brain, Terminal, Shield, Package, Sparkles, RotateCcw, X, Command, Cookie, User } from "lucide-react";
 import { trackEvent, setAnalyticsConsent, setAnalyticsUser } from "./analytics.js";
+
+// Shared across the app so deeply-nested markdown renderers can turn
+// "Section N" references into clickable links that open + scroll.
+const SectionNavContext = createContext(null);
 
 export default function PythonInterviewPrep() {
   const [openSections, setOpenSections] = useState({ 0: true });
@@ -211,6 +215,19 @@ export default function PythonInterviewPrep() {
         items: ids.length,
       });
     }
+  };
+
+  // Follow a "Section N" link inside answer text. Clears filters that would
+  // hide the target, expands it, then smooth-scrolls (after a tick so the
+  // DOM can render if the section was filtered out).
+  const jumpToSection = (targetIdx) => {
+    setActiveCategory("all");
+    setQuery("");
+    setOpenSections((s) => ({ ...s, [targetIdx]: true }));
+    setTimeout(() => {
+      const el = document.getElementById(`section-${targetIdx}`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 60);
   };
 
   const sections = [
@@ -11532,7 +11549,7 @@ except:
   };
 
   return (
-    <>
+    <SectionNavContext.Provider value={jumpToSection}>
     <div
       className="min-h-screen w-full"
       style={{
@@ -11760,6 +11777,8 @@ except:
           return (
             <section
               key={sec.idx}
+              id={`section-${sec.idx}`}
+              style={{ scrollMarginTop: "120px" }}
               className="border border-zinc-800 rounded-lg overflow-hidden bg-[#1a1d22]"
             >
               <div className="w-full flex items-center gap-3 px-5 py-4 hover:bg-[#1f2329] transition">
@@ -11978,13 +11997,14 @@ except:
         </div>
       </div>
     )}
-    </>
+    </SectionNavContext.Provider>
   );
 }
 
 /* ------------ helper components ------------ */
 
 function ProseBlock({ text }) {
+  const onJump = useContext(SectionNavContext);
   // split by paragraphs, render bold (**) and inline code (`)
   const paragraphs = text.split(/\n\n+/);
   return (
@@ -12005,7 +12025,7 @@ function ProseBlock({ text }) {
             <ul key={i} className="my-2 space-y-1 pl-4">
               {lines.map((ln, j) => (
                 <li key={j} className="text-zinc-300">
-                  {renderInline(ln.replace(/^(-|\*|\d+\.)\s/, ""))}
+                  {renderInline(ln.replace(/^(-|\*|\d+\.)\s/, ""), onJump)}
                 </li>
               ))}
             </ul>
@@ -12017,7 +12037,7 @@ function ProseBlock({ text }) {
             {trimmed.split("\n").map((line, j) => (
               <span key={j}>
                 {j > 0 && <br />}
-                {renderInline(line)}
+                {renderInline(line, onJump)}
               </span>
             ))}
           </p>
@@ -12027,15 +12047,53 @@ function ProseBlock({ text }) {
   );
 }
 
-function renderInline(text) {
-  // handle `code` and **bold**
+// Replace "Section N" runs with clickable jump links, preserving surrounding text.
+function linkifySectionRefs(text, onJump, baseKey = 0) {
+  const re = /Section (\d+)/g;
   const nodes = [];
-  const regex = /(`[^`]+`|\*\*[^*]+\*\*)/g;
+  let last = 0;
+  let m;
+  let key = baseKey;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) {
+      nodes.push(<span key={key++}>{text.slice(last, m.index)}</span>);
+    }
+    const n = parseInt(m[1], 10);
+    nodes.push(
+      <a
+        key={key++}
+        href={`#section-${n}`}
+        onClick={(e) => {
+          if (onJump) {
+            e.preventDefault();
+            onJump(n);
+          }
+        }}
+        className="text-teal-400 hover:text-teal-300 underline-offset-2 hover:underline transition"
+      >
+        {m[0]}
+      </a>
+    );
+    last = re.lastIndex;
+  }
+  if (last < text.length) {
+    nodes.push(<span key={key++}>{text.slice(last)}</span>);
+  }
+  return nodes;
+}
+
+function renderInline(text, onJump) {
+  // handle `code`, **bold**, and "Section N" refs (inside plain text AND bold)
+  const nodes = [];
+  const re = /(`[^`]+`|\*\*[^*]+\*\*)/g;
   let last = 0;
   let m;
   let key = 0;
-  while ((m = regex.exec(text)) !== null) {
-    if (m.index > last) nodes.push(<span key={key++}>{text.slice(last, m.index)}</span>);
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) {
+      nodes.push(...linkifySectionRefs(text.slice(last, m.index), onJump, key));
+      key += 100;
+    }
     const tok = m[0];
     if (tok.startsWith("`")) {
       nodes.push(
@@ -12053,17 +12111,20 @@ function renderInline(text) {
     } else {
       nodes.push(
         <strong key={key++} className="text-zinc-100 font-semibold">
-          {tok.slice(2, -2)}
+          {linkifySectionRefs(tok.slice(2, -2), onJump, 0)}
         </strong>
       );
     }
-    last = regex.lastIndex;
+    last = re.lastIndex;
   }
-  if (last < text.length) nodes.push(<span key={key++}>{text.slice(last)}</span>);
+  if (last < text.length) {
+    nodes.push(...linkifySectionRefs(text.slice(last), onJump, key));
+  }
   return nodes;
 }
 
 function TableBlock({ src }) {
+  const onJump = useContext(SectionNavContext);
   const rows = src.trim().split("\n").filter((l) => l.trim());
   const header = rows[0].split("|").map((c) => c.trim()).filter(Boolean);
   const bodyRows = rows.slice(2).map((r) =>
@@ -12079,7 +12140,7 @@ function TableBlock({ src }) {
                 key={i}
                 className="px-3 py-2 text-left text-teal-400 font-semibold border-b border-zinc-800 uppercase text-[11px] tracking-wider"
               >
-                {renderInline(h)}
+                {renderInline(h, onJump)}
               </th>
             ))}
           </tr>
@@ -12089,7 +12150,7 @@ function TableBlock({ src }) {
             <tr key={i} className="border-b border-zinc-800/60 last:border-0 hover:bg-[#1f2329]/40">
               {r.map((c, j) => (
                 <td key={j} className="px-3 py-2 text-zinc-300 align-top">
-                  {renderInline(c)}
+                  {renderInline(c, onJump)}
                 </td>
               ))}
             </tr>
