@@ -7172,6 +7172,75 @@ class Billing:
 
 **Why bad:** Hidden globals make the unit of testing the whole app. Tests patch \`datetime.now\`, forget to unpatch, and next test flakes on Tuesday. DI moves this ugliness to the edges where it belongs.`,
         },
+        {
+          q: "Unit of Work — cheat sheet (full write-up above)",
+          a: `A one-screen summary of the pattern. For the full SQLAlchemy + event-publishing implementation, scroll up to the "Unit of Work — group DB operations into one transaction" item earlier in this section.
+
+| Step | What it does | Why it matters |
+|---|---|---|
+| Enter context | Open a session, attach repositories to it | One session = one transaction boundary. Repos share it. |
+| Call repositories | Queue creates/updates/deletes | Repositories **don't commit** — they just stage work. |
+| \`commit()\` | Flush + commit the whole batch | All-or-nothing across multiple aggregates. |
+| \`rollback()\` on exception | Handled automatically by \`__exit__\` | A half-failed use case never leaves half-written state. |
+| Publish events **after** commit | Emit \`OrderPlaced\`, \`UserRegistered\`, … | Outbox discipline — you never publish on rollback. |
+
+**Minimal skeleton**
+
+\`\`\`python
+class SqlAlchemyUoW:
+    def __init__(self, session_factory, publisher):
+        self._session_factory = session_factory
+        self._publisher = publisher
+
+    def __enter__(self):
+        self._session = self._session_factory()
+        self.users  = UserRepo(self._session)
+        self.orders = OrderRepo(self._session)
+        self.events: list = []
+        return self
+
+    def __exit__(self, exc_type, *_):
+        if exc_type:
+            self._session.rollback()
+        self._session.close()
+
+    def commit(self):
+        self._session.commit()
+        for e in self.events:                         # AFTER successful commit
+            self._publisher.publish(e)
+\`\`\`
+
+**Usage in a use case**
+
+\`\`\`python
+def place_order(uow_factory, user_id: int, items: list[Item]) -> int:
+    with uow_factory() as uow:
+        user = uow.users.get(user_id)
+        order = Order.for_user(user, items)
+        uow.orders.add(order)
+        uow.events.append(OrderPlaced(order.id, user.id))
+        uow.commit()                                  # one commit for both repos
+        return order.id
+\`\`\`
+
+**Reach for UoW when**
+
+- A single use case touches **2+ repositories** and needs atomicity.
+- You emit **domain events** and want to publish only after a successful commit.
+- You need **deterministic tests** — pass a \`FakeUoW\` with in-memory repos, no DB.
+
+**Don't bother when**
+
+- The operation hits one repo with one call — the repository's per-method transaction is already enough.
+- Read-only — there's nothing to commit.
+- The event publisher and DB share no atomicity requirement (rare, but e.g. metrics increments).
+
+**Common mistakes**
+
+- Publishing events **before** commit → consumers see an order that later rolled back.
+- Calling \`session.commit()\` inside a repository → repositories lose their "stage, don't commit" contract.
+- Letting \`__exit__\` swallow exceptions → a half-failed use case silently commits its half.`,
+        },
       ],
     },
 
@@ -8300,6 +8369,72 @@ def get_user(user_id: int) -> User:
 \`\`\`
 
 **Why bad:** A lying annotation is worse than none — reviewers, IDE autocomplete, and static analysis all trust it. The caller writes \`user.name\`, prod returns \`None\`, and the stack trace points nowhere useful.`,
+        },
+        {
+          q: "Protocol vs ABC — which to reach for when",
+          a: `Both describe "types that follow an interface", but they solve different problems.
+
+| Decision axis | \`Protocol\` (structural) | \`ABC\` (nominal) |
+|---|---|---|
+| Inheritance required | **No** — any class with matching methods fits | **Yes** — \`class Foo(MyABC)\` is mandatory |
+| Where interface lives | Near the consumer (\`ports.py\`, use case) | Near the base — you own the hierarchy |
+| 3rd-party / stdlib types | ✅ \`file\` already matches \`SupportsClose\` | ❌ Can't retroactively subclass |
+| Shared implementation in base | ❌ Only method shapes | ✅ Mixed concrete + abstract methods |
+| Multiple interfaces per class | ✅ Free — many Protocols, no MRO cost | ⚠️ Multiple inheritance gets messy fast |
+| Typical home | Small ports — \`Cache\`, \`Clock\`, \`Repo\` | Framework base classes, template method pattern |
+
+**Protocol — structural, no coupling**
+
+\`\`\`python
+from typing import Protocol, runtime_checkable
+
+class Cache(Protocol):
+    def get(self, k: str) -> str | None: ...
+    def set(self, k: str, v: str) -> None: ...
+
+# No inheritance. Matches by shape.
+class RedisCache:
+    def get(self, k): ...
+    def set(self, k, v): ...
+
+class InMemoryCache(dict):                   # already matches!
+    def set(self, k, v): self[k] = v
+
+def serve(c: Cache) -> None: ...             # accepts both, and any future impl
+\`\`\`
+
+**ABC — nominal, with shared code**
+
+\`\`\`python
+from abc import ABC, abstractmethod
+
+class Repository(ABC):
+    def with_retry(self, fn, tries=3):       # concrete — shared across all subclasses
+        for i in range(tries):
+            try: return fn()
+            except TransientError:
+                if i == tries - 1: raise
+
+    @abstractmethod
+    def save(self, entity): ...
+    @abstractmethod
+    def get(self, id): ...
+
+class UserRepo(Repository):                  # MUST inherit to get .with_retry
+    def save(self, e): ...
+    def get(self, i): ...
+
+# UserRepo()          # ✅ works
+# Repository()        # ❌ TypeError: abstract methods missing
+\`\`\`
+
+**Decision heuristic (90% of the time):**
+
+1. **Start with \`Protocol\`.** Zero coupling to the consumer, tests swap in a simple class, and it plays nicely with 3rd-party types you don't own.
+2. **Graduate to \`ABC\` only when** (a) the base has real shared code you want subclasses to inherit, or (b) you're extending something the framework already exposes as a class hierarchy (\`django.views.View\`, \`sqlalchemy.orm.DeclarativeBase\`, \`unittest.TestCase\`).
+3. **Don't mix both for the same role.** Pick one direction per interface — ABC that also happens to be a Protocol confuses readers.
+
+See Section 3 for how Protocol fits SOLID's Dependency Inversion, and Section 10 for using Protocols as ports in hexagonal architecture.`,
         },
       ],
     },
