@@ -5325,7 +5325,27 @@ def get_user(cache: Cache, user_id: str) -> bytes | None:
     return cache.get(f"user:{user_id}")
 \`\`\`
 
-Use adapters at the BOUNDARY between your domain and external libraries — it keeps vendor lock-in from creeping into business logic.`,
+Use adapters at the BOUNDARY between your domain and external libraries — it keeps vendor lock-in from creeping into business logic.
+
+**When to reach for it**
+- A 3rd-party SDK has a different method shape than the rest of your codebase (\`fetch/store\` vs \`get/set\`).
+- You need to swap one vendor for another (Redis → Memcached → DynamoDB) without touching business logic.
+- The external API is awkward (callback-based, sync-only, raw strings) and you want a **pythonic** surface internally.
+
+**When NOT to use it**
+- The external shape *already* matches your interface — direct use is fine; an adapter for its own sake is dead weight.
+- You own both sides. If you control the class, just change it — adapters exist because you **can't** edit the other side.
+- For small one-off calls — a function wrapper is lighter than a class adapter.
+
+**Adapter vs Facade vs Proxy**
+
+| Pattern | What it changes | Intent |
+|---|---|---|
+| **Adapter** | Interface **shape** | "Plug the wrong-shaped thing in" |
+| **Facade** | **Number of calls** | "Hide a 5-step ritual behind one method" |
+| **Proxy** | **Access control** / timing | "Same interface, but lazy / auth-checked / cached" |
+
+**Common mistake:** adding business logic inside the adapter. An adapter translates; it doesn't decide. Once \`RedisCacheAdapter.get\` starts retrying, validating, or logging domain events, split those out — you're leaking responsibilities.`,
         },
         {
           q: "Facade — one simple entry point over a complex subsystem",
@@ -5379,7 +5399,31 @@ class OrderFacade:
         return charge_id
 \`\`\`
 
-Controllers / API handlers call \`OrderFacade.place_order\` — they don't need to know about compensation logic, rollback on payment failure, or email templates.`,
+Controllers / API handlers call \`OrderFacade.place_order\` — they don't need to know about compensation logic, rollback on payment failure, or email templates.
+
+**When to reach for it**
+- A use case touches **3+ subsystems** that always fire in the same order (payment → inventory → shipping → email).
+- You want a **stable public surface** while internals churn (swap Stripe for Adyen tomorrow — callers don't notice).
+- The subsystem has leaky abstractions (raw exceptions, session cleanup, retry logic) you want to hide.
+
+**When NOT to use it**
+- For a single delegation — that's just a method call, not a pattern.
+- When callers legitimately need granular control (e.g. cancel inventory reservation without charging). A too-aggressive facade turns into a bottleneck that **every** new requirement has to fight through.
+- When subsystems don't always run together — if \`place_order\` fires 6 calls and \`refund\` only needs 1 of them, you'll end up with a god class.
+
+**The anti-pattern — god facade**
+
+A facade that grows \`charge_user\`, \`refund_user\`, \`promote_user\`, \`archive_user\`, \`notify_user\`, \`send_report\` is no longer a facade — it's a **service layer with no structure**. Rule of thumb: one facade per **use case**, not per entity. If two methods share no subsystems, they belong in different classes.
+
+**Facade vs Service Layer vs Mediator**
+
+| | Facade | Service Layer | Mediator |
+|---|---|---|---|
+| Callers | External code | External + internal | Internal only |
+| Subsystems | Stable, few | Many, cross-cutting | Decoupled peers that shouldn't talk directly |
+| Direction | One-way | One-way | Bidirectional negotiation |
+
+**Common mistake:** putting transaction/UoW concerns **inside** the facade. Keep UoW in the use case or its own boundary — a facade should orchestrate, not own transactions.`,
         },
         {
           q: "Proxy — stand-in that controls access (lazy, caching, auth)",
@@ -5417,7 +5461,37 @@ class AuthProxy:
 
 # Usage — zero startup cost; model loads on first predict()
 model = AuthProxy(LazyModelProxy("model.pt"), current_user)
-\`\`\``,
+\`\`\`
+
+**Three flavors of proxy, same shape**
+
+| Flavor | What it wraps | When to use |
+|---|---|---|
+| **Virtual / lazy** | Expensive-to-create object | ML models, DB connections, remote clients — pay the cost **only if used** |
+| **Protection / auth** | Privileged operation | Read-only role, per-field authorization, signed-URL checks |
+| **Caching / memoizing** | Slow computation or remote call | Deduplicate redundant requests, TTL caches, negative caching |
+
+All three share the **same interface** as the wrapped object — that's what makes it a proxy and not an adapter.
+
+**When to reach for a proxy**
+- Startup cost is high and not all code paths exercise it.
+- Access rules depend on **caller context** (user, tenant, API key) that the wrapped object doesn't know.
+- You want to add cross-cutting behavior (cache, audit, retry) **without** modifying the wrapped class or its callers.
+
+**When NOT to use it**
+- One caller, one path — just call the object directly.
+- Cross-cutting behavior that differs per call-site — middleware or decorators scale better than 12 proxies.
+- Transparent proxies that silently change performance characteristics (e.g. a "caching proxy" that returns stale data) without the caller opting in — surprising, hard to debug.
+
+**Proxy vs Adapter vs Decorator**
+
+- **Proxy** = same interface, controls **access** or **timing**.
+- **Adapter** = different interface, translates **shape**.
+- **Decorator** (GoF, not Python \`@decorator\`) = same interface, adds **behavior** (log, validate) — often stacked.
+
+A proxy that also changes the interface shape isn't a proxy — it's an adapter that happens to delay loading.
+
+**Common mistake:** using a proxy to hide side effects. If \`LazyModelProxy.predict\` can spend 10 s loading a 5 GB model on the first call, the caller **needs to know** (at minimum: initialize explicitly on startup / readiness probe). Silent latency surprises are production incidents waiting.`,
         },
         {
           q: "Observer — pub/sub without global state",
@@ -5467,7 +5541,34 @@ unsub = bus.subscribe("user.created", add_to_crm)
 
 bus.publish("user.created", {"email": "a@b.com"})
 unsub()                                # dynamic unsubscribe
-\`\`\``,
+\`\`\`
+
+**When to reach for Observer / in-process pub-sub**
+- Multiple **unrelated** effects on one event ("user.created" → email + CRM + analytics + audit) and you don't want the producer to know about any of them.
+- You want to keep domain code free of infrastructure calls — raise events from the domain, subscribe handlers in wiring.
+- Tests: a handler's job is "on X do Y" — subscribe a fake, publish X, assert Y was called. No mock frameworks needed.
+
+**Three failure modes to plan for**
+
+1. **A bad subscriber breaks the rest.** The example above wraps each handler in \`try/except\` so a crashed \`send_welcome\` doesn't stop \`add_to_crm\`. Log and move on — **never** re-raise from the bus unless you're willing to fail the producer.
+2. **Re-entrant publish.** A handler that itself calls \`bus.publish\` mid-dispatch can mutate \`self._subscribers\` while we're iterating. The \`list(...)\` copy in \`publish\` prevents the iterator bug, but you can still hit infinite loops if events cascade. Add a recursion guard if your events chain.
+3. **Sync handlers blocking the producer.** If a subscriber does HTTP I/O, the producer waits on every handler. Either move handlers to a thread/queue, or use an async bus (\`await asyncio.gather(*(h(payload) for h in handlers))\`).
+
+**When in-process pub-sub is the wrong tool**
+- You need **durability** — restart loses in-flight events. Use a real broker (Redis Streams, RabbitMQ, Kafka, SQS).
+- You need **cross-process fan-out** — in-process only fires for subscribers in the current Python worker.
+- You need **ordering across consumers** — a bus is best-effort; for strict order use a log-based queue.
+
+**Sync bus vs async bus vs broker**
+
+| | Sync bus | Async in-process | Broker (Redis/Kafka/SQS) |
+|---|---|---|---|
+| Latency | Lowest (same stack frame) | Low (same process, yielded) | Network + queue depth |
+| Durability | None (lost on crash) | None | Full (until ack'd) |
+| Cross-process | ❌ | ❌ | ✅ |
+| Ordering | Sub subscribe order | Scheduler-dependent | Per-partition guarantee |
+
+**Common mistake:** firing events **before** the DB commits. If the handler acts on an \`OrderPlaced\` event but the transaction later rolls back, you've sent a receipt for a non-existent order. Pair with the **Transactional Outbox** pattern (see later in this section).`,
         },
         {
           q: "Strategy — swap algorithms at runtime",
@@ -5513,7 +5614,37 @@ class Checkout:
 # Swap at runtime based on customer tier, promo, etc.
 checkout = Checkout(BulkDiscountPricing(threshold=10, discount=Decimal("0.15")))
 checkout.pricing = TieredPricing([(1, Decimal("10")), (50, Decimal("8"))])
-\`\`\``,
+\`\`\`
+
+**Function or class? A decision table**
+
+| Situation | Pick |
+|---|---|
+| Stateless one-liner (\`lambda p, q: p * q\`) | **Function** — plain callable, no class overhead |
+| Takes **configuration** (\`threshold\`, \`tiers\`, feature flags) | **Class with \`__init__\`** — encapsulates setup |
+| Needs to **remember** data between calls (counters, caches) | **Class with instance state** |
+| You want \`isinstance\`/\`match\` checks or tagged dispatch | **Class** — types are first-class |
+| Algorithm has helper methods or multi-step internals | **Class** — decompose properly |
+
+Python's convention: start with a function, promote to a class the moment you need config or state. Don't create a class for a one-line \`def\`.
+
+**When to reach for Strategy**
+- Two or more interchangeable algorithms for the same job (pricing, shipping rates, ranking, compression, sort order).
+- The choice is **data-driven** (customer tier, A/B flag, admin setting) and can change **at runtime**.
+- You want to **test each algorithm in isolation** without mocking the caller.
+
+**When NOT to use it**
+- A single \`if/else\` branch that handles 2 cases and hasn't changed in 6 months — pattern is premature.
+- The "strategies" differ only in **configuration**, not in logic — a single class with parameters is simpler.
+- The caller already knows the concrete type — then just pass the concrete object; no Protocol needed.
+
+**Strategy vs State vs Template Method**
+
+- **Strategy**: swap algorithms for the **same decision**. Caller picks one.
+- **State**: the **object's own internal mode** chooses the algorithm (\`DraftOrder\` vs \`PaidOrder\` — different \`cancel()\` rules).
+- **Template Method**: base class fixes the **skeleton**, subclasses fill in steps. Inheritance, not composition.
+
+**Common mistake:** passing \`None\` to mean "no strategy". Better — define a \`NoOpStrategy\` that returns base price. Saves a null check everywhere.`,
         },
         {
           q: "Command — encapsulate an action as an object",
