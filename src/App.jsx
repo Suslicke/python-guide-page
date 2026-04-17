@@ -148,6 +148,18 @@ export default function PythonInterviewPrep() {
     setLastCheckedId(id);
   };
 
+  // Toggle every item inside a section at once.
+  // If all items are already checked → uncheck all; otherwise → check all.
+  const toggleSection = (sec) => {
+    const ids = sec.items.map((_, i) => `${sec.idx}-${i}`);
+    const allChecked = ids.every((id) => checked[id]);
+    setChecked((c) => {
+      const next = { ...c };
+      for (const id of ids) next[id] = !allChecked;
+      return next;
+    });
+  };
+
   const sections = [
     // ============ INTERVIEW MUST-HAVE ============
     {
@@ -10814,33 +10826,89 @@ def withdraw(amount):
 
         {filtered.map((sec) => {
           const isOpen = openSections[sec.idx];
+          const secIds = sec.items.map((_, i) => `${sec.idx}-${i}`);
+          const doneCount = secIds.reduce(
+            (n, id) => n + (checked[id] ? 1 : 0),
+            0
+          );
+          const allChecked = doneCount === secIds.length && secIds.length > 0;
+          const someChecked = doneCount > 0 && !allChecked;
           return (
             <section
               key={sec.idx}
               className="border border-zinc-800 rounded-lg overflow-hidden bg-[#1a1d22]"
             >
-              <button
-                onClick={() => toggle(sec.idx)}
-                className="w-full flex items-center gap-3 px-5 py-4 hover:bg-[#1f2329] transition text-left"
-              >
-                <div className="text-teal-400 flex-shrink-0">{sec.icon}</div>
-                <div className="flex-1">
-                  <h2
-                    className="text-zinc-100 font-bold text-lg"
-                    style={{ fontFamily: "'Georgia', serif" }}
-                  >
-                    {sec.title}
-                  </h2>
-                  <div className="text-[11px] uppercase tracking-[0.15em] text-zinc-500 mt-0.5 font-medium">
-                    {sec.level} · {sec.items.length} topics
+              <div className="w-full flex items-center gap-3 px-5 py-4 hover:bg-[#1f2329] transition">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleSection(sec);
+                  }}
+                  className={`flex-shrink-0 w-5 h-5 rounded border-2 flex items-center justify-center transition ${
+                    allChecked
+                      ? "bg-teal-500 border-teal-500"
+                      : someChecked
+                      ? "bg-teal-500/25 border-teal-500"
+                      : "border-zinc-600 hover:border-teal-500 bg-transparent"
+                  }`}
+                  aria-label={
+                    allChecked
+                      ? "Uncheck all in this section"
+                      : "Check all in this section"
+                  }
+                  aria-checked={
+                    allChecked ? "true" : someChecked ? "mixed" : "false"
+                  }
+                  role="checkbox"
+                  title={
+                    allChecked
+                      ? "Uncheck all in this section"
+                      : "Check all in this section"
+                  }
+                >
+                  {allChecked && (
+                    <Check
+                      size={12}
+                      className="text-zinc-900"
+                      strokeWidth={3}
+                    />
+                  )}
+                  {someChecked && (
+                    <div className="w-2.5 h-[2px] bg-teal-400 rounded" />
+                  )}
+                </button>
+                <button
+                  onClick={() => toggle(sec.idx)}
+                  className="flex-1 flex items-center gap-3 text-left min-w-0"
+                  aria-expanded={isOpen}
+                >
+                  <div className="text-teal-400 flex-shrink-0">{sec.icon}</div>
+                  <div className="flex-1 min-w-0">
+                    <h2
+                      className="text-zinc-100 font-bold text-lg"
+                      style={{ fontFamily: "'Georgia', serif" }}
+                    >
+                      {sec.title}
+                    </h2>
+                    <div className="text-[11px] uppercase tracking-[0.15em] text-zinc-500 mt-0.5 font-medium">
+                      {sec.level} · {sec.items.length} topics
+                      {doneCount > 0 && (
+                        <>
+                          {" · "}
+                          <span className="text-teal-400">
+                            {doneCount}/{sec.items.length} done
+                          </span>
+                        </>
+                      )}
+                    </div>
                   </div>
-                </div>
-                {isOpen ? (
-                  <ChevronDown size={18} className="text-zinc-500" />
-                ) : (
-                  <ChevronRight size={18} className="text-zinc-500" />
-                )}
-              </button>
+                  {isOpen ? (
+                    <ChevronDown size={18} className="text-zinc-500" />
+                  ) : (
+                    <ChevronRight size={18} className="text-zinc-500" />
+                  )}
+                </button>
+              </div>
 
               {isOpen && (
                 <div className="border-t border-zinc-800 divide-y divide-zinc-800/70">
