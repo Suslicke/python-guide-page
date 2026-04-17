@@ -2115,7 +2115,42 @@ def hello():
     print("hi")
 \`\`\`
 
-Three levels deep: \`repeat\` → \`decorator\` → \`wrapper\`.`,
+Three levels deep: \`repeat\` → \`decorator\` → \`wrapper\`.
+
+**Production pattern — permission check with \`@wraps\`:**
+
+\`\`\`python
+from functools import wraps
+
+def permission_required(permission):
+    def decorator(func):
+        @wraps(func)                                 # preserve name, doc, signature
+        def wrapper(*args, **kwargs):
+            user_permission = kwargs.get("user_permission")
+            if user_permission != permission:
+                raise PermissionError("Permission denied")
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+@permission_required("admin")
+def delete_user(user_id, user_permission):
+    print(f"User {user_id} has been deleted.")
+
+delete_user(1, user_permission="admin")   # ok
+delete_user(1, user_permission="guest")   # raises PermissionError
+\`\`\`
+
+**Reading the layers:**
+- \`permission_required(permission)\` — **factory**. Takes config, returns the real decorator. Runs once, at import time.
+- \`decorator(func)\` — the real decorator. Wraps the target function. Runs once, when \`@permission_required(...)\` is applied.
+- \`wrapper(*args, **kwargs)\` — **runtime guard**. Runs every call. Does the permission check.
+
+\`@wraps(func)\` is non-negotiable here — without it, stack traces, Sphinx docs, pytest, and any \`inspect.signature()\`-based code all see \`wrapper\` instead of \`delete_user\`.
+
+**Production-ready upgrades (5 lines each):**
+- Raise a **typed** \`PermissionDenied(AppError)\` (see Section 27) instead of bare \`PermissionError\` so the HTTP edge returns a clean 403.
+- Pull \`user_permission\` from a framework-native place (FastAPI's \`Depends\`, Flask's \`g\`, Django's \`request.user\`) rather than reading \`kwargs\` — the current shape leaks auth into the business signature.`,
         },
         {
           q: "Always use functools.wraps",
@@ -5091,7 +5126,23 @@ def get(key: str, default: str | None = None) -> str | None:
 # import config; config.load(); config.get("APP_DB_URL")
 \`\`\`
 
-**If you need a class — thread-safe Singleton via metaclass:**
+**The interview-classic — override \`__new__\`:**
+\`\`\`python
+class Singleton:
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+a, b = Singleton(), Singleton()
+a is b           # True
+\`\`\`
+
+Clean, no metaclass, fits on one slide. **Caveat:** \`__init__\` runs on **every** call, so \`Singleton(x=1)\` then \`Singleton(x=2)\` will overwrite state on the same instance. And it's not thread-safe — two threads can race into \`__new__\` and both create an instance before the \`is None\` check passes.
+
+**When you need thread safety — metaclass + lock:**
 \`\`\`python
 import threading
 
