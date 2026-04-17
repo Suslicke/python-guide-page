@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef, createContext, useContext } from "react";
-import { ChevronRight, ChevronDown, Check, Search, BookOpen, Code2, Cpu, Database, Layers, Lightbulb, Zap, Target, AlertTriangle, Box, GitBranch, Flame, Brain, Terminal, Shield, Package, Sparkles, RotateCcw, X, Command, Cookie, User } from "lucide-react";
+import { ChevronRight, ChevronDown, Check, Search, BookOpen, Code2, Cpu, Database, Layers, Lightbulb, Zap, Target, AlertTriangle, Box, GitBranch, Flame, Brain, Terminal, Shield, Package, Sparkles, RotateCcw, X, Command, Cookie, User, Sun, Moon } from "lucide-react";
 import { trackEvent, setAnalyticsConsent, setAnalyticsUser } from "./analytics.js";
 
 // Shared across the app so deeply-nested markdown renderers can turn
@@ -18,7 +18,23 @@ export default function PythonInterviewPrep() {
     import.meta.env.VITE_GA_ID ? "pending" : "denied"
   );
   const [username, setUsername] = useState("");
+  const [theme, setTheme] = useState(() => {
+    if (typeof document === "undefined") return "dark";
+    return document.documentElement.classList.contains("dark") ? "dark" : "light";
+  });
   const searchRef = useRef(null);
+
+  const toggleTheme = () => {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.classList.toggle("dark", next === "dark");
+    try {
+      localStorage.setItem("theme", next);
+    } catch {
+      // ignore private-mode failures
+    }
+    trackEvent("theme_toggle", { theme: next });
+  };
 
   // Analytics consent — read stored choice on mount, replay it to gtag.
   // Also read the saved username and push it into GA.
@@ -11942,7 +11958,7 @@ async def on_unexpected(request, exc: Exception):
       parts.push(
         <pre
           key={key++}
-          className="my-3 overflow-x-auto rounded-md bg-[#0d0f12] px-4 py-3 text-[13px] leading-relaxed text-zinc-100 border border-zinc-800"
+          className="my-3 overflow-x-auto rounded-md bg-[var(--bg-code)] px-4 py-3 text-[13px] leading-relaxed text-zinc-900 dark:text-zinc-100 border border-zinc-200 dark:border-zinc-800"
           style={{
             fontFamily:
               "'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, monospace",
@@ -11964,27 +11980,38 @@ async def on_unexpected(request, exc: Exception):
     <div
       className="min-h-screen w-full"
       style={{
-        background: "#14161a",
-        color: "#e4e4e7",
+        background: "var(--bg-app)",
+        color: "var(--color-fg)",
         fontFamily:
           "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
       }}
     >
       {/* Top banner */}
-      <div className="relative overflow-hidden border-b border-zinc-800 bg-[#1a1d22]">
+      <div className="relative overflow-hidden border-b border-zinc-200 dark:border-zinc-800 bg-[var(--bg-surface)]">
         <div className="relative max-w-6xl mx-auto px-6 py-10">
-          <div className="flex items-center gap-2 mb-4 text-zinc-500 text-xs uppercase tracking-[0.2em] font-medium">
-            <Terminal size={14} />
-            <span>Python Interview Prep · 2026</span>
+          {/* Top row: tagline + theme toggle */}
+          <div className="flex items-start justify-between mb-4">
+            <div className="flex items-center gap-2 text-zinc-500 dark:text-zinc-500 text-xs uppercase tracking-[0.2em] font-medium">
+              <Terminal size={14} />
+              <span>Python Interview Prep · 2026</span>
+            </div>
+            <button
+              onClick={toggleTheme}
+              className="flex-shrink-0 p-2 rounded-md border border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:border-zinc-400 dark:hover:border-zinc-600 transition"
+              aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+              title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            >
+              {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
+            </button>
           </div>
           <h1
-            className="text-4xl md:text-5xl font-bold text-zinc-100 leading-[1.1] tracking-tight"
+            className="text-4xl md:text-5xl font-bold text-zinc-900 dark:text-zinc-100 leading-[1.1] tracking-tight"
             style={{ fontFamily: "'Georgia', serif" }}
           >
             Core Python —{" "}
             <span className="text-teal-400">Trainee to Lead</span>
           </h1>
-          <p className="mt-4 max-w-2xl text-zinc-400 text-[15px] leading-relaxed">
+          <p className="mt-4 max-w-2xl text-zinc-600 dark:text-zinc-400 text-[15px] leading-relaxed">
             A complete, categorized interview guide. Decorators, generators,
             GIL, hashing, GC, sliding window, parentheses, SOLID, and every
             tricky gotcha. Check items off as you review.
@@ -11992,7 +12019,7 @@ async def on_unexpected(request, exc: Exception):
 
           {/* Progress bar */}
           <div className="mt-6 max-w-md">
-            <div className="flex items-center justify-between text-xs text-zinc-400 mb-2 font-medium">
+            <div className="flex items-center justify-between text-xs text-zinc-600 dark:text-zinc-400 mb-2 font-medium">
               <span>
                 <Check size={12} className="inline mr-1 text-teal-400" />
                 {checkedCount} / {totalItems} reviewed
@@ -12006,7 +12033,7 @@ async def on_unexpected(request, exc: Exception):
                       ? "text-teal-400"
                       : saveState === "error"
                       ? "text-red-400"
-                      : "text-zinc-600"
+                      : "text-zinc-400 dark:text-zinc-600"
                   }`}
                 >
                   {saveState === "saving" && "saving…"}
@@ -12014,10 +12041,10 @@ async def on_unexpected(request, exc: Exception):
                   {saveState === "error" && "⚠ save failed"}
                   {saveState === "idle" && (storageReady ? "auto-saved" : "loading…")}
                 </span>
-                <span className="text-zinc-500">{progress}%</span>
+                <span className="text-zinc-500 dark:text-zinc-500">{progress}%</span>
               </div>
             </div>
-            <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
+            <div className="h-2 bg-zinc-200 dark:bg-zinc-800 rounded-full overflow-hidden">
               <div
                 className="h-full bg-teal-500 transition-all duration-500"
                 style={{ width: `${progress}%` }}
@@ -12027,7 +12054,7 @@ async def on_unexpected(request, exc: Exception):
               {checkedCount > 0 && (
                 <button
                   onClick={clearAll}
-                  className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-zinc-500 hover:text-red-400 border border-zinc-800 hover:border-red-900 rounded-md px-3 py-1.5 transition"
+                  className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-zinc-500 dark:text-zinc-500 hover:text-red-400 border border-zinc-200 dark:border-zinc-800 hover:border-red-900 rounded-md px-3 py-1.5 transition"
                 >
                   <RotateCcw size={12} />
                   Clear all progress
@@ -12036,7 +12063,7 @@ async def on_unexpected(request, exc: Exception):
               <div className="relative">
                 <User
                   size={12}
-                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500"
+                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500 dark:text-zinc-500"
                 />
                 <input
                   type="text"
@@ -12049,7 +12076,7 @@ async def on_unexpected(request, exc: Exception):
                   maxLength={64}
                   placeholder="Your name (optional)"
                   aria-label="Your name for the leaderboard"
-                  className="bg-[#1a1d22] border border-zinc-800 rounded-md pl-7 pr-2 py-1.5 text-[11px] text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-teal-600 transition w-48"
+                  className="bg-[var(--bg-surface)] border border-zinc-200 dark:border-zinc-800 rounded-md pl-7 pr-2 py-1.5 text-[11px] text-zinc-700 dark:text-zinc-300 placeholder-zinc-400 dark:placeholder-zinc-600 focus:outline-none focus:border-teal-600 transition w-48"
                 />
               </div>
             </div>
@@ -12058,7 +12085,7 @@ async def on_unexpected(request, exc: Exception):
       </div>
 
       {/* Controls */}
-      <div className="sticky top-0 z-20 border-b border-zinc-800 bg-[#14161a]/90 backdrop-blur-md">
+      <div className="sticky top-0 z-20 border-b border-zinc-200 dark:border-zinc-800 bg-[rgb(var(--bg-app-rgb)/0.9)] backdrop-blur-md">
         <div className="max-w-6xl mx-auto px-6 py-4 space-y-3">
           {/* Big search */}
           <div className="relative group">
@@ -12075,7 +12102,7 @@ async def on_unexpected(request, exc: Exception):
             <div className="relative flex items-center">
               <Search
                 size={18}
-                className="absolute left-4 text-zinc-500 group-focus-within:text-teal-400 transition-colors"
+                className="absolute left-4 text-zinc-500 dark:text-zinc-500 group-focus-within:text-teal-400 transition-colors"
               />
               <input
                 ref={searchRef}
@@ -12083,7 +12110,7 @@ async def on_unexpected(request, exc: Exception):
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search decorators, GIL, MRO, hashing, sliding window…"
                 aria-label="Search questions"
-                className="w-full bg-[#1a1d22] border border-zinc-800 rounded-xl pl-12 pr-36 py-3.5 text-zinc-100 text-[15px] placeholder-zinc-500 focus:outline-none focus:border-teal-500/70 focus:ring-2 focus:ring-teal-500/20 shadow-[0_1px_0_rgba(255,255,255,0.02)_inset] transition-all"
+                className="w-full bg-[var(--bg-surface)] border border-zinc-200 dark:border-zinc-800 rounded-xl pl-12 pr-36 py-3.5 text-zinc-900 dark:text-zinc-100 text-[15px] placeholder-zinc-500 dark:placeholder-zinc-500 focus:outline-none focus:border-teal-500/70 focus:ring-2 focus:ring-teal-500/20 shadow-[0_1px_0_rgba(255,255,255,0.02)_inset] transition-all"
               />
               <div className="absolute right-3 flex items-center gap-2">
                 {query ? (
@@ -12100,19 +12127,19 @@ async def on_unexpected(request, exc: Exception):
                         setQuery("");
                         searchRef.current?.focus();
                       }}
-                      className="p-1.5 rounded-md text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 transition"
+                      className="p-1.5 rounded-md text-zinc-500 dark:text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200 dark:hover:bg-zinc-800 transition"
                       aria-label="Clear search"
                     >
                       <X size={14} />
                     </button>
                   </>
                 ) : (
-                  <div className="hidden sm:flex items-center gap-1 text-[10px] text-zinc-500 font-medium">
-                    <kbd className="px-1.5 py-0.5 rounded border border-zinc-700 bg-[#0d0f12] font-mono leading-none">
+                  <div className="hidden sm:flex items-center gap-1 text-[10px] text-zinc-500 dark:text-zinc-500 font-medium">
+                    <kbd className="px-1.5 py-0.5 rounded border border-zinc-300 dark:border-zinc-700 bg-[var(--bg-code)] font-mono leading-none">
                       /
                     </kbd>
-                    <span className="text-zinc-600">or</span>
-                    <kbd className="px-1.5 py-0.5 rounded border border-zinc-700 bg-[#0d0f12] font-mono inline-flex items-center gap-0.5 leading-none">
+                    <span className="text-zinc-400 dark:text-zinc-600">or</span>
+                    <kbd className="px-1.5 py-0.5 rounded border border-zinc-300 dark:border-zinc-700 bg-[var(--bg-code)] font-mono inline-flex items-center gap-0.5 leading-none">
                       <Command size={10} />K
                     </kbd>
                   </div>
@@ -12135,8 +12162,8 @@ async def on_unexpected(request, exc: Exception):
                 }}
                 className={`flex-shrink-0 text-[11px] uppercase tracking-wider px-3 py-1.5 rounded-md border transition font-medium ${
                   activeCategory === c.id
-                    ? "bg-teal-500 text-zinc-900 border-teal-500 shadow-[0_0_0_3px_rgba(20,184,166,0.15)]"
-                    : "bg-[#1a1d22] text-zinc-400 border-zinc-800 hover:border-zinc-600 hover:text-zinc-200"
+                    ? "bg-teal-500 text-zinc-100 dark:text-zinc-900 border-teal-500 shadow-[0_0_0_3px_rgba(20,184,166,0.15)]"
+                    : "bg-[var(--bg-surface)] text-zinc-600 dark:text-zinc-400 border-zinc-200 dark:border-zinc-800 hover:border-zinc-400 dark:hover:border-zinc-600 hover:text-zinc-800 dark:hover:text-zinc-200"
                 }`}
               >
                 {c.label}
@@ -12150,14 +12177,14 @@ async def on_unexpected(request, exc: Exception):
       <div className="max-w-6xl mx-auto px-6 py-8 space-y-3">
         {filtered.length === 0 && (
           <div className="text-center py-20">
-            <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-[#1a1d22] border border-zinc-800 mb-4">
-              <Search size={18} className="text-zinc-500" />
+            <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-[var(--bg-surface)] border border-zinc-200 dark:border-zinc-800 mb-4">
+              <Search size={18} className="text-zinc-500 dark:text-zinc-500" />
             </div>
-            <p className="text-zinc-300 text-sm font-medium">
+            <p className="text-zinc-700 dark:text-zinc-300 text-sm font-medium">
               No matches for{" "}
               <span className="text-teal-400">“{query}”</span>
             </p>
-            <p className="mt-1 text-zinc-500 text-xs">
+            <p className="mt-1 text-zinc-500 dark:text-zinc-500 text-xs">
               Try a shorter query or switch category.
             </p>
             {(query || activeCategory !== "all") && (
@@ -12167,7 +12194,7 @@ async def on_unexpected(request, exc: Exception):
                   setActiveCategory("all");
                   searchRef.current?.focus();
                 }}
-                className="mt-4 inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-zinc-400 hover:text-teal-400 border border-zinc-800 hover:border-teal-900 rounded-md px-3 py-1.5 transition"
+                className="mt-4 inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-zinc-600 dark:text-zinc-400 hover:text-teal-400 border border-zinc-200 dark:border-zinc-800 hover:border-teal-900 rounded-md px-3 py-1.5 transition"
               >
                 <RotateCcw size={12} />
                 Reset filters
@@ -12190,9 +12217,9 @@ async def on_unexpected(request, exc: Exception):
               key={sec.idx}
               id={`section-${sec.idx}`}
               style={{ scrollMarginTop: "120px" }}
-              className="border border-zinc-800 rounded-lg overflow-hidden bg-[#1a1d22]"
+              className="border border-zinc-200 dark:border-zinc-800 rounded-lg overflow-hidden bg-[var(--bg-surface)]"
             >
-              <div className="w-full flex items-center gap-3 px-5 py-4 hover:bg-[#1f2329] transition">
+              <div className="w-full flex items-center gap-3 px-5 py-4 hover:bg-[var(--bg-hover)] transition">
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -12203,7 +12230,7 @@ async def on_unexpected(request, exc: Exception):
                       ? "bg-teal-500 border-teal-500"
                       : someChecked
                       ? "bg-teal-500/25 border-teal-500"
-                      : "border-zinc-600 hover:border-teal-500 bg-transparent"
+                      : "border-zinc-400 dark:border-zinc-600 hover:border-teal-500 bg-transparent"
                   }`}
                   aria-label={
                     allChecked
@@ -12223,7 +12250,7 @@ async def on_unexpected(request, exc: Exception):
                   {allChecked && (
                     <Check
                       size={12}
-                      className="text-zinc-900"
+                      className="text-zinc-100 dark:text-zinc-900"
                       strokeWidth={3}
                     />
                   )}
@@ -12239,12 +12266,12 @@ async def on_unexpected(request, exc: Exception):
                   <div className="text-teal-400 flex-shrink-0">{sec.icon}</div>
                   <div className="flex-1 min-w-0">
                     <h2
-                      className="text-zinc-100 font-bold text-lg"
+                      className="text-zinc-900 dark:text-zinc-100 font-bold text-lg"
                       style={{ fontFamily: "'Georgia', serif" }}
                     >
                       {sec.title}
                     </h2>
-                    <div className="text-[11px] uppercase tracking-[0.15em] text-zinc-500 mt-0.5 font-medium">
+                    <div className="text-[11px] uppercase tracking-[0.15em] text-zinc-500 dark:text-zinc-500 mt-0.5 font-medium">
                       {sec.level} · {sec.items.length} topics
                       {doneCount > 0 && (
                         <>
@@ -12257,22 +12284,22 @@ async def on_unexpected(request, exc: Exception):
                     </div>
                   </div>
                   {isOpen ? (
-                    <ChevronDown size={18} className="text-zinc-500" />
+                    <ChevronDown size={18} className="text-zinc-500 dark:text-zinc-500" />
                   ) : (
-                    <ChevronRight size={18} className="text-zinc-500" />
+                    <ChevronRight size={18} className="text-zinc-500 dark:text-zinc-500" />
                   )}
                 </button>
               </div>
 
               {isOpen && (
-                <div className="border-t border-zinc-800 divide-y divide-zinc-800/70">
+                <div className="border-t border-zinc-200 dark:border-zinc-800 divide-y divide-zinc-200/70 dark:divide-zinc-800/70">
                   {sec.items.map((it, i) => {
                     const id = `${sec.idx}-${i}`;
                     const isChecked = !!checked[id];
                     return (
                       <div
                         key={i}
-                        className="px-5 py-5 hover:bg-[#1f2329]/50 transition"
+                        className="px-5 py-5 hover:bg-[rgb(var(--bg-hover-rgb)/0.5)] transition"
                       >
                         <div className="flex items-start gap-3">
                           <button
@@ -12280,7 +12307,7 @@ async def on_unexpected(request, exc: Exception):
                             className={`flex-shrink-0 mt-1 w-5 h-5 rounded border-2 flex items-center justify-center transition ${
                               isChecked
                                 ? "bg-teal-500 border-teal-500"
-                                : "border-zinc-600 hover:border-teal-500 bg-transparent"
+                                : "border-zinc-400 dark:border-zinc-600 hover:border-teal-500 bg-transparent"
                             }`}
                             aria-label="Mark reviewed (Shift+click to toggle a range)"
                             title="Shift+click to toggle a range"
@@ -12288,7 +12315,7 @@ async def on_unexpected(request, exc: Exception):
                             {isChecked && (
                               <Check
                                 size={12}
-                                className="text-zinc-900"
+                                className="text-zinc-100 dark:text-zinc-900"
                                 strokeWidth={3}
                               />
                             )}
@@ -12297,13 +12324,13 @@ async def on_unexpected(request, exc: Exception):
                             <h3
                               className={`font-semibold text-[15px] mb-2 ${
                                 isChecked
-                                  ? "line-through text-zinc-600"
-                                  : "text-zinc-100"
+                                  ? "line-through text-zinc-400 dark:text-zinc-600"
+                                  : "text-zinc-900 dark:text-zinc-100"
                               }`}
                             >
                               {highlight(it.q, query)}
                             </h3>
-                            <div className="text-zinc-300 text-[14px] leading-relaxed">
+                            <div className="text-zinc-700 dark:text-zinc-300 text-[14px] leading-relaxed">
                               {renderAnswer(it.a)}
                             </div>
                           </div>
@@ -12327,7 +12354,7 @@ async def on_unexpected(request, exc: Exception):
               Interview Day Checklist
             </h3>
           </div>
-          <ul className="space-y-2 text-zinc-300 text-[14px] leading-relaxed">
+          <ul className="space-y-2 text-zinc-700 dark:text-zinc-300 text-[14px] leading-relaxed">
             <li>• Think out loud — narrate your approach BEFORE coding.</li>
             <li>• State time + space complexity after each solution.</li>
             <li>• Ask clarifying questions: input size, edge cases, unicode?</li>
@@ -12347,11 +12374,11 @@ async def on_unexpected(request, exc: Exception):
       </div>
 
       {/* Footer — author credit */}
-      <footer className="border-t border-zinc-800 mt-8">
-        <div className="max-w-6xl mx-auto px-6 py-6 text-center text-zinc-500 text-xs">
+      <footer className="border-t border-zinc-200 dark:border-zinc-800 mt-8">
+        <div className="max-w-6xl mx-auto px-6 py-6 text-center text-zinc-500 dark:text-zinc-500 text-xs">
           Created by{" "}
-          <span className="text-zinc-300 font-medium">Andrei</span>{" "}
-          <span className="text-zinc-700">·</span>{" "}
+          <span className="text-zinc-700 dark:text-zinc-300 font-medium">Andrei</span>{" "}
+          <span className="text-zinc-300 dark:text-zinc-700">·</span>{" "}
           <a
             href="https://t.me/Suslicke"
             target="_blank"
@@ -12370,7 +12397,7 @@ async def on_unexpected(request, exc: Exception):
         role="dialog"
         aria-live="polite"
         aria-label="Cookie consent"
-        className="fixed bottom-4 inset-x-4 md:inset-x-auto md:left-1/2 md:-translate-x-1/2 md:w-full md:max-w-xl z-50 bg-[#1a1d22]/95 backdrop-blur-md border border-zinc-800 rounded-xl shadow-2xl p-4 md:p-5"
+        className="fixed bottom-4 inset-x-4 md:inset-x-auto md:left-1/2 md:-translate-x-1/2 md:w-full md:max-w-xl z-50 bg-[rgb(var(--bg-surface-rgb)/0.95)] backdrop-blur-md border border-zinc-200 dark:border-zinc-800 rounded-xl shadow-2xl p-4 md:p-5"
         style={{
           fontFamily:
             "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
@@ -12381,10 +12408,10 @@ async def on_unexpected(request, exc: Exception):
             <Cookie size={18} className="text-teal-400" />
           </div>
           <div className="flex-1 min-w-0">
-            <h3 className="text-zinc-100 text-sm font-semibold">
+            <h3 className="text-zinc-900 dark:text-zinc-100 text-sm font-semibold">
               We use cookies
             </h3>
-            <p className="mt-1 text-zinc-400 text-[13px] leading-relaxed">
+            <p className="mt-1 text-zinc-600 dark:text-zinc-400 text-[13px] leading-relaxed">
               We use Google Analytics to understand how this guide is used —
               searches, sections reviewed, and general device info. If you
               set a name, it's attached so you can see your own progress. No
@@ -12393,13 +12420,13 @@ async def on_unexpected(request, exc: Exception):
             <div className="mt-3 flex flex-wrap gap-2">
               <button
                 onClick={() => updateConsent("granted")}
-                className="text-[12px] font-semibold uppercase tracking-wider px-3.5 py-1.5 rounded-md bg-teal-500 text-zinc-900 hover:bg-teal-400 transition"
+                className="text-[12px] font-semibold uppercase tracking-wider px-3.5 py-1.5 rounded-md bg-teal-500 text-zinc-100 dark:text-zinc-900 hover:bg-teal-400 transition"
               >
                 Accept
               </button>
               <button
                 onClick={() => updateConsent("denied")}
-                className="text-[12px] font-medium uppercase tracking-wider px-3.5 py-1.5 rounded-md text-zinc-300 border border-zinc-700 hover:border-zinc-500 hover:text-zinc-100 transition"
+                className="text-[12px] font-medium uppercase tracking-wider px-3.5 py-1.5 rounded-md text-zinc-700 dark:text-zinc-300 border border-zinc-300 dark:border-zinc-700 hover:border-zinc-500 dark:hover:border-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition"
               >
                 Reject
               </button>
@@ -12435,7 +12462,7 @@ function ProseBlock({ text }) {
           return (
             <ul key={i} className="my-2 space-y-1 pl-4">
               {lines.map((ln, j) => (
-                <li key={j} className="text-zinc-300">
+                <li key={j} className="text-zinc-700 dark:text-zinc-300">
                   {renderInline(ln.replace(/^(-|\*|\d+\.)\s/, ""), onJump)}
                 </li>
               ))}
@@ -12444,7 +12471,7 @@ function ProseBlock({ text }) {
         }
 
         return (
-          <p key={i} className="my-2 text-zinc-300">
+          <p key={i} className="my-2 text-zinc-700 dark:text-zinc-300">
             {trimmed.split("\n").map((line, j) => (
               <span key={j}>
                 {j > 0 && <br />}
@@ -12510,7 +12537,7 @@ function renderInline(text, onJump) {
       nodes.push(
         <code
           key={key++}
-          className="px-1.5 py-0.5 mx-0.5 rounded bg-[#0d0f12] text-teal-300 text-[12.5px] border border-zinc-800"
+          className="px-1.5 py-0.5 mx-0.5 rounded bg-[var(--bg-code)] text-teal-300 text-[12.5px] border border-zinc-200 dark:border-zinc-800"
           style={{
             fontFamily:
               "'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, monospace",
@@ -12521,7 +12548,7 @@ function renderInline(text, onJump) {
       );
     } else {
       nodes.push(
-        <strong key={key++} className="text-zinc-100 font-semibold">
+        <strong key={key++} className="text-zinc-900 dark:text-zinc-100 font-semibold">
           {linkifySectionRefs(tok.slice(2, -2), onJump, 0)}
         </strong>
       );
@@ -12543,13 +12570,13 @@ function TableBlock({ src }) {
   );
   return (
     <div className="my-3 overflow-x-auto">
-      <table className="w-full text-[13px] border border-zinc-800 rounded-md overflow-hidden">
-        <thead className="bg-[#0d0f12]">
+      <table className="w-full text-[13px] border border-zinc-200 dark:border-zinc-800 rounded-md overflow-hidden">
+        <thead className="bg-[var(--bg-code)]">
           <tr>
             {header.map((h, i) => (
               <th
                 key={i}
-                className="px-3 py-2 text-left text-teal-400 font-semibold border-b border-zinc-800 uppercase text-[11px] tracking-wider"
+                className="px-3 py-2 text-left text-teal-400 font-semibold border-b border-zinc-200 dark:border-zinc-800 uppercase text-[11px] tracking-wider"
               >
                 {renderInline(h, onJump)}
               </th>
@@ -12558,9 +12585,9 @@ function TableBlock({ src }) {
         </thead>
         <tbody>
           {bodyRows.map((r, i) => (
-            <tr key={i} className="border-b border-zinc-800/60 last:border-0 hover:bg-[#1f2329]/40">
+            <tr key={i} className="border-b border-zinc-200/60 dark:border-zinc-800/60 last:border-0 hover:bg-[rgb(var(--bg-hover-rgb)/0.4)]">
               {r.map((c, j) => (
-                <td key={j} className="px-3 py-2 text-zinc-300 align-top">
+                <td key={j} className="px-3 py-2 text-zinc-700 dark:text-zinc-300 align-top">
                   {renderInline(c, onJump)}
                 </td>
               ))}
