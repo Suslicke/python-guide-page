@@ -26,3 +26,38 @@ export function initAnalytics() {
   document.head.appendChild(s);
   return true;
 }
+
+// Forward an analytics event. Silent no-op when gtag isn't loaded (dev mode,
+// ad-blocker, no VITE_GA_ID). Consent Mode v2 decides whether the request is
+// tracked or cookieless — we don't gate that here.
+export function trackEvent(name, params = {}) {
+  if (typeof window === "undefined" || typeof window.gtag !== "function") {
+    return;
+  }
+  window.gtag("event", name, params);
+}
+
+// Update the current consent choice. Called from the cookie banner.
+export function setAnalyticsConsent(value) {
+  if (typeof window === "undefined" || typeof window.gtag !== "function") {
+    return;
+  }
+  window.gtag("consent", "update", { analytics_storage: value });
+}
+
+// Attach an optional username as a GA4 user property + user_id so reports
+// can be sliced by individual user. Only called after the user explicitly
+// types a name — voluntary personal data.
+export function setAnalyticsUser(username) {
+  if (typeof window === "undefined" || typeof window.gtag !== "function") {
+    return;
+  }
+  const clean = (username || "").trim().slice(0, 64);
+  if (clean) {
+    window.gtag("set", "user_properties", { username: clean });
+    window.gtag("set", { user_id: clean });
+  } else {
+    window.gtag("set", "user_properties", { username: null });
+    window.gtag("set", { user_id: null });
+  }
+}
