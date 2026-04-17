@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from "react";
-import { ChevronRight, ChevronDown, Check, Search, BookOpen, Code2, Cpu, Database, Layers, Lightbulb, Zap, Target, AlertTriangle, Box, GitBranch, Flame, Brain, Terminal, Shield, Package, Sparkles, RotateCcw, X, Command } from "lucide-react";
+import { ChevronRight, ChevronDown, Check, Search, BookOpen, Code2, Cpu, Database, Layers, Lightbulb, Zap, Target, AlertTriangle, Box, GitBranch, Flame, Brain, Terminal, Shield, Package, Sparkles, RotateCcw, X, Command, Cookie } from "lucide-react";
 
 export default function PythonInterviewPrep() {
   const [openSections, setOpenSections] = useState({ 0: true });
@@ -8,7 +8,40 @@ export default function PythonInterviewPrep() {
   const [activeCategory, setActiveCategory] = useState("all");
   const [storageReady, setStorageReady] = useState(false);
   const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
+  // If analytics isn't configured in this build, no consent is needed → no banner
+  const [consent, setConsent] = useState(() =>
+    import.meta.env.VITE_GA_ID ? "pending" : "denied"
+  );
   const searchRef = useRef(null);
+
+  // Analytics consent — read stored choice on mount, replay it to gtag
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("ga-consent");
+      if (saved === "granted" || saved === "denied") {
+        setConsent(saved);
+        if (typeof window.gtag === "function") {
+          window.gtag("consent", "update", {
+            analytics_storage: saved,
+          });
+        }
+      }
+    } catch {
+      // localStorage unavailable (private mode, etc) — keep banner shown
+    }
+  }, []);
+
+  const updateConsent = (value) => {
+    setConsent(value);
+    try {
+      localStorage.setItem("ga-consent", value);
+    } catch {
+      // ignore — consent still applied in-memory for this session
+    }
+    if (typeof window.gtag === "function") {
+      window.gtag("consent", "update", { analytics_storage: value });
+    }
+  };
 
   // Global keyboard shortcuts: "/" or "⌘K"/"Ctrl+K" focus the search, Esc clears it
   useEffect(() => {
@@ -10563,6 +10596,7 @@ def withdraw(amount):
   };
 
   return (
+    <>
     <div
       className="min-h-screen w-full"
       style={{
@@ -10865,6 +10899,50 @@ def withdraw(amount):
         </div>
       </div>
     </div>
+
+    {/* Cookie / analytics consent banner */}
+    {consent === "pending" && (
+      <div
+        role="dialog"
+        aria-live="polite"
+        aria-label="Cookie consent"
+        className="fixed bottom-4 inset-x-4 md:inset-x-auto md:left-1/2 md:-translate-x-1/2 md:w-full md:max-w-xl z-50 bg-[#1a1d22]/95 backdrop-blur-md border border-zinc-800 rounded-xl shadow-2xl p-4 md:p-5"
+        style={{
+          fontFamily:
+            "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+        }}
+      >
+        <div className="flex items-start gap-3">
+          <div className="flex-shrink-0 w-9 h-9 rounded-lg bg-teal-500/10 border border-teal-500/20 flex items-center justify-center">
+            <Cookie size={18} className="text-teal-400" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-zinc-100 text-sm font-semibold">
+              We use cookies
+            </h3>
+            <p className="mt-1 text-zinc-400 text-[13px] leading-relaxed">
+              We use Google Analytics to understand how this guide is used.
+              No ads, no personal data. You can change your mind later.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                onClick={() => updateConsent("granted")}
+                className="text-[12px] font-semibold uppercase tracking-wider px-3.5 py-1.5 rounded-md bg-teal-500 text-zinc-900 hover:bg-teal-400 transition"
+              >
+                Accept
+              </button>
+              <button
+                onClick={() => updateConsent("denied")}
+                className="text-[12px] font-medium uppercase tracking-wider px-3.5 py-1.5 rounded-md text-zinc-300 border border-zinc-700 hover:border-zinc-500 hover:text-zinc-100 transition"
+              >
+                Reject
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
 
