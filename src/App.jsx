@@ -534,6 +534,30 @@ fns = [lambda: i for i in range(3)]
 
 **Be ready to discuss:** a real project, a hard bug you debugged, a time you picked threading/multiprocessing/async and why, trade-offs of a design choice.`,
         },
+        {
+          q: "✅ Good vs ❌ Bad — how to study",
+          a: `**✅ Good — Verbalize, don't re-read**
+
+\`\`\`python
+# Pick one weak topic, explain it out loud
+# in 60 seconds without looking. If you stall,
+# you don't know it — that's signal, not failure.
+# Then write 5–10 lines of code from memory.
+\`\`\`
+
+**Why:** Interviews test **recall**, not recognition. Speaking forces you to produce the full mental model — gaps that silent reading hides become loud.
+
+**❌ Bad — Speed-read, nod, move on**
+
+\`\`\`python
+# Skim 300 topics in one evening, tick every
+# checkbox as "reviewed". The brain rewards
+# recognition with a feeling of competence.
+# On the whiteboard, it evaporates.
+\`\`\`
+
+**Why bad:** You've seen the words before, so it *feels* familiar. In the interview, familiar isn't enough — you need to produce the answer from scratch under pressure.`,
+        },
       ],
     },
 
@@ -875,6 +899,32 @@ def oops():
 - \`import foo\` adds \`foo\` to the current namespace
 - Each module has its own global namespace — "global" means "module-level", not "program-wide"
 - The built-in namespace lives in \`builtins\` module and is shared across all modules`,
+        },
+        {
+          q: "✅ Good vs ❌ Bad — identity vs equality",
+          a: `**✅ Good — \`is\` for singletons, \`==\` for values**
+
+\`\`\`python
+if user is None:          # identity — sentinel
+    return guest_session()
+
+if user.role == "admin": # value equality
+    grant_access()
+\`\`\`
+
+**Why:** \`is\` checks *same object in memory* — only correct for singletons (\`None\`, \`True\`, \`False\`). \`==\` dispatches to \`__eq__\` and is what you mean 99% of the time.
+
+**❌ Bad — \`is\` with numbers or strings**
+
+\`\`\`python
+if score is 100:          # works... sometimes
+    win()                 # CPython caches small ints
+
+if name is "admin":       # toy demo works,
+    grant()               # prod breaks silently
+\`\`\`
+
+**Why bad:** CPython interns small ints \`-5..256\` and short strings, so \`is\` *accidentally* works on toy inputs and breaks on bigger ones. A classic production landmine that hides in code review.`,
         },
       ],
     },
@@ -1272,6 +1322,33 @@ from collections import Counter
 Counter({"a": 1, "b": 2}) + Counter({"b": 3, "c": 4})
 # Counter({'b': 5, 'c': 4, 'a': 1})
 \`\`\``,
+        },
+        {
+          q: "✅ Good vs ❌ Bad — iterating a list",
+          a: `**✅ Good — \`enumerate\` + comprehension**
+
+\`\`\`python
+for i, user in enumerate(users):
+    print(i, user.email)
+
+active_emails = [u.email for u in users if u.active]
+\`\`\`
+
+**Why:** \`enumerate\` gives index + value without double-indexing. Comprehensions are C-speed, express intent in one line, and produce a new list without mutation.
+
+**❌ Bad — \`range(len(...))\` + manual append**
+
+\`\`\`python
+for i in range(len(users)):
+    print(i, users[i].email)      # double indexing
+
+active_emails = []
+for u in users:                   # 4 lines for 1
+    if u.active:
+        active_emails.append(u.email)
+\`\`\`
+
+**Why bad:** \`range(len(x))\` is a Java accent on Python and fails when \`x\` is an iterator. Manual \`append\` loops are slower than comprehensions and hide the shape of the result.`,
         },
       ],
     },
@@ -1939,6 +2016,36 @@ super(Child, self).__init__(*args, **kwargs)
 
 **Common trap:** \`super().__init__()\` is NOT optional in multiple inheritance. If \`D(B, C)\` and \`B.__init__\` doesn't call super, then \`C.__init__\` never runs — silent bug.`,
         },
+        {
+          q: "✅ Good vs ❌ Bad — class design",
+          a: `**✅ Good — Small class, composition, explicit API**
+
+\`\`\`python
+class OrderPricer:
+    def __init__(self, tax: TaxService, discount: DiscountService):
+        self._tax = tax
+        self._discount = discount
+
+    def total(self, order: Order) -> Decimal:
+        subtotal = sum(i.price for i in order.items)
+        return self._discount.apply(subtotal) + self._tax.on(subtotal)
+\`\`\`
+
+**Why:** One responsibility (pricing), dependencies injected so every branch is unit-testable. Composition beats inheritance when behaviors can vary independently — Python's duck typing makes this cheap.
+
+**❌ Bad — God class + deep inheritance**
+
+\`\`\`python
+class OrderManager(BaseEntity, Auditable, Cacheable, Serializable):
+    def save(self): ...           # persistence
+    def send_email(self): ...     # notification
+    def calculate_tax(self): ...  # pricing
+    def render_pdf(self): ...     # view
+    def _dunder_magic(self): ...  # 600 lines later
+\`\`\`
+
+**Why bad:** Four responsibilities and four parent classes means every test needs the full world. Changes in any mixin ripple through everything. Composition + protocols scale; deep inheritance doesn't.`,
+        },
       ],
     },
 
@@ -2345,6 +2452,42 @@ print(handlers)
 - \`@app.route(...)\` — Flask routing
 - \`@pytest.fixture\` — test fixtures
 - \`@retry\` / \`@timing\` / \`@auth_required\` — custom patterns`,
+        },
+        {
+          q: "✅ Good vs ❌ Bad — writing a decorator",
+          a: `**✅ Good — Preserve metadata with \`functools.wraps\`**
+
+\`\`\`python
+from functools import wraps
+
+def timed(fn):
+    @wraps(fn)                          # keeps name, doc, signature
+    def inner(*a, **kw):
+        t = time.perf_counter()
+        try:
+            return fn(*a, **kw)
+        finally:
+            log.info("%s took %.2fms", fn.__name__, (time.perf_counter() - t) * 1000)
+    return inner
+\`\`\`
+
+**Why:** \`@wraps\` copies \`__name__\`, \`__doc__\`, \`__wrapped__\`, so introspection tools (Sphinx, pytest, debuggers, logging) still see the real function. Without it, stack traces and docs become useless.
+
+**❌ Bad — Forget \`wraps\`, eat the exception**
+
+\`\`\`python
+def timed(fn):
+    def inner(*a, **kw):
+        try:
+            return fn(*a, **kw)
+        except Exception:
+            pass                        # 🎉 silent failure
+    return inner                        # no @wraps either
+
+# help(timed(my_func)) → "inner(*args, **kwargs)"  # whose function is this?
+\`\`\`
+
+**Why bad:** Swallowing exceptions in a "helpful" decorator hides real bugs. Missing \`@wraps\` breaks \`help()\`, \`inspect.signature()\`, and makes pytest report errors against \`inner\` instead of your code.`,
         },
       ],
     },
@@ -3195,6 +3338,33 @@ def tailing(f):
         f.close()                 # clean up on .close() or GC
 \`\`\``,
         },
+        {
+          q: "✅ Good vs ❌ Bad — processing a big file",
+          a: `**✅ Good — Lazy pipeline, constant memory**
+
+\`\`\`python
+def lines_from(path):
+    with open(path) as f:
+        yield from f                      # one line at a time
+
+errors = (l for l in lines_from("app.log") if "ERROR" in l)
+first_10 = list(itertools.islice(errors, 10))  # stops reading early
+\`\`\`
+
+**Why:** Generators keep memory flat regardless of input size, and composing them with generator expressions stays lazy — \`islice\` stops the pipeline as soon as the 10th match is found.
+
+**❌ Bad — Read everything, then filter**
+
+\`\`\`python
+with open("app.log") as f:
+    lines = f.readlines()                 # 4 GB → OOM
+
+errors = [l for l in lines if "ERROR" in l]  # another copy
+first_10 = errors[:10]                    # read 4GB for 10 lines
+\`\`\`
+
+**Why bad:** \`readlines()\` loads the whole file into RAM. On a 4 GB log file you OOM the worker. Even when it fits, you've done all the filtering before realizing you only needed the first 10.`,
+        },
       ],
     },
 
@@ -3562,6 +3732,36 @@ async def main(paths: list[str]) -> Counter:
 - Stream aggregates (\`Counter\`) instead of accumulating lines
 - For truly massive scale, don't use Python — use \`zcat ... | grep | awk\`, DuckDB, or a purpose-built log tool`,
         },
+        {
+          q: "✅ Good vs ❌ Bad — picking the right concurrency tool",
+          a: `**✅ Good — Match the tool to the workload**
+
+\`\`\`python
+# I/O-bound (HTTP, DB, files) → asyncio or threads
+async with aiohttp.ClientSession() as s:
+    results = await asyncio.gather(*(s.get(u) for u in urls))
+
+# CPU-bound (hashing, parsing, math) → processes
+with ProcessPoolExecutor() as pool:
+    hashes = list(pool.map(hash_file, paths))
+\`\`\`
+
+**Why:** The GIL releases during I/O syscalls, so threads/asyncio scale for network and disk work. For CPU-bound code the GIL serializes threads — only **processes** give real parallelism.
+
+**❌ Bad — Threads for CPU-bound**
+
+\`\`\`python
+# CPU-bound: 8 threads, 1 core worth of throughput
+with ThreadPoolExecutor(max_workers=8) as pool:
+    results = list(pool.map(expensive_math, tasks))
+
+# Worse: block the event loop with sync code
+async def handler():
+    time.sleep(5)                         # halts ALL coroutines
+\`\`\`
+
+**Why bad:** CPU-bound threads take turns holding the GIL — you pay coordination cost for zero parallelism. Sync blocking inside \`async\` freezes the whole event loop: one slow request stalls every user.`,
+        },
       ],
     },
 
@@ -3627,6 +3827,40 @@ If you make a class mutable and hashable, and mutate it while in a set → corru
         {
           q: "Hash randomization (PYTHONHASHSEED)",
           a: `Since Python 3.3, string hashes are randomized per process to defend against hash-collision DoS attacks. That's why \`hash("abc")\` differs across runs. Set \`PYTHONHASHSEED=0\` to disable for debugging.`,
+        },
+        {
+          q: "✅ Good vs ❌ Bad — making an object hashable",
+          a: `**✅ Good — Immutable fields, \`__eq__\` and \`__hash__\` together**
+
+\`\`\`python
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Coord:
+    x: int
+    y: int
+    # frozen=True → auto __hash__ from (x, y); can't mutate fields
+
+seen = {Coord(1, 2), Coord(3, 4)}
+\`\`\`
+
+**Why:** \`frozen=True\` gives you equality + hash for free, and the immutability guarantee means the hash can't silently change after insertion. This is the dict-key contract.
+
+**❌ Bad — Mutable object as dict key**
+
+\`\`\`python
+class Point:
+    def __init__(self, x, y): self.x, self.y = x, y
+    def __eq__(self, other): return (self.x, self.y) == (other.x, other.y)
+    def __hash__(self): return hash((self.x, self.y))
+
+p = Point(1, 2)
+d = {p: "origin"}
+p.x = 99                               # hash(p) changed
+d[p]                                   # KeyError
+\`\`\`
+
+**Why bad:** The dict stored \`p\` in the bucket for its original hash. Mutating \`x\` changes \`hash(p)\` — the dict now can't find its own key. A textbook way to produce a "spooky missing key" bug.`,
         },
       ],
     },
@@ -3812,6 +4046,40 @@ finally:
 \`\`\`
 
 **Interview answer:** "I can't replace CPython's GC, but for production resource management I use context managers for deterministic cleanup, \`weakref\` for caches, object pools for expensive resources like DB connections, and I tune \`gc\` thresholds or toggle collection for latency-sensitive paths."`,
+        },
+        {
+          q: "✅ Good vs ❌ Bad — managing references",
+          a: `**✅ Good — \`weakref\` to break cycles**
+
+\`\`\`python
+import weakref
+
+class Node:
+    def __init__(self, parent=None):
+        self._parent = weakref.ref(parent) if parent else None
+        self.children = []
+
+    @property
+    def parent(self):
+        return self._parent() if self._parent else None
+\`\`\`
+
+**Why:** A weak parent pointer lets the parent be collected without waiting for the cyclic GC. Memory pressure drops and teardown order becomes predictable.
+
+**❌ Bad — Strong cycles + \`__del__\`**
+
+\`\`\`python
+class Node:
+    def __init__(self, parent=None):
+        self.parent = parent            # strong ref
+        if parent:
+            parent.children.append(self)
+
+    def __del__(self):                  # keeps cycle uncollectable
+        log.info("bye")              # on pre-3.4 Pythons, leaked
+\`\`\`
+
+**Why bad:** \`parent\` + \`children\` form a reference cycle. On legacy Pythons, a custom \`__del__\` used to make the cycle uncollectable. Even today it delays collection until the next gc pass — noticeable under load.`,
         },
       ],
     },
@@ -4478,6 +4746,32 @@ class RunningMedian:
             return -self._lo[0]
         return (-self._lo[0] + self._hi[0]) / 2
 \`\`\``,
+        },
+        {
+          q: "✅ Good vs ❌ Bad — \"does this list contain X?\"",
+          a: `**✅ Good — Pre-build a set for O(1) lookup**
+
+\`\`\`python
+allowed = set(admin_ids)                # O(n) once
+
+for req in requests:                    # O(1) per hit
+    if req.user_id in allowed:
+        approve(req)
+\`\`\`
+
+**Why:** Hash-set membership is O(1). One pass to build it, then every lookup is constant time — the total is O(n + m) instead of O(n·m).
+
+**❌ Bad — Repeated \`list.index\` / \`in\` on a list**
+
+\`\`\`python
+for req in requests:                    # O(n) per req
+    if req.user_id in admin_ids:        # linear scan of list
+        approve(req)
+
+# 10k requests × 10k admins = 10^8 comparisons → seconds of latency
+\`\`\`
+
+**Why bad:** \`x in list\` is linear. A tight loop doing linear lookups is the single most common source of unexpected O(n²) in real services — and it only surfaces when data grows.`,
         },
       ],
     },
@@ -6827,6 +7121,40 @@ CMD ["python", "-m", "myservice"]
 11. Logs as event streams (stdout)
 12. Admin tasks as one-off processes`,
         },
+        {
+          q: "✅ Good vs ❌ Bad — wiring dependencies",
+          a: `**✅ Good — Dependency injection**
+
+\`\`\`python
+class Billing:
+    def __init__(self, db: DB, clock: Clock):
+        self._db = db
+        self._clock = clock
+
+    def charge(self, user_id: int):
+        now = self._clock.now()
+        self._db.insert("charges", user_id=user_id, at=now)
+
+# in tests: Billing(FakeDB(), FrozenClock("2026-04-17"))
+\`\`\`
+
+**Why:** Collaborators enter via the constructor, so tests swap them for fakes without monkeypatching. Time and I/O are just parameters — deterministic tests become trivial.
+
+**❌ Bad — Global singletons and hidden coupling**
+
+\`\`\`python
+from app.db import db                   # module-level global
+from datetime import datetime           # real clock
+
+class Billing:
+    def charge(self, user_id):
+        db.insert("charges", user_id=user_id, at=datetime.now())
+
+# test has to monkeypatch both db and datetime — fragile
+\`\`\`
+
+**Why bad:** Hidden globals make the unit of testing the whole app. Tests patch \`datetime.now\`, forget to unpatch, and next test flakes on Tuesday. DI moves this ugliness to the edges where it belongs.`,
+        },
       ],
     },
 
@@ -7066,6 +7394,34 @@ re.findall(r"<.*?>", "<a><b>")    # ['<a>', '<b>'] — non-greedy
 
 **Performance tip:** for hot paths, \`re.compile\` the pattern at module level. The \`re\` module caches compiled patterns internally but only up to 512.`,
         },
+        {
+          q: "✅ Good vs ❌ Bad — encoding",
+          a: `**✅ Good — Be explicit about encoding**
+
+\`\`\`python
+with open("notes.txt", encoding="utf-8") as f:
+    text = f.read()
+
+payload = text.encode("utf-8")            # str → bytes
+echoed = payload.decode("utf-8")          # bytes → str
+
+with open("bom.csv", encoding="utf-8-sig") as f:  # strips Excel BOM
+    rows = list(csv.reader(f))
+\`\`\`
+
+**Why:** Explicit \`encoding=\` is portable across OSes. \`utf-8-sig\` cleanly handles the BOM that Excel / Windows Notepad add — a common "my CSV has a weird first column name" bug.
+
+**❌ Bad — Rely on the platform default**
+
+\`\`\`python
+with open("notes.txt") as f:             # Windows: cp1252, Linux: utf-8
+    text = f.read()                      # silently mojibake-s emoji
+
+payload = text.encode()                  # what encoding? depends on host
+\`\`\`
+
+**Why bad:** Default encoding differs by OS and locale. Code that works on your Mac corrupts Cyrillic or emoji on a Windows CI runner. The bug lives until someone looks at a character directly.`,
+        },
       ],
     },
 
@@ -7167,6 +7523,36 @@ secrets.compare_digest(a, b) # constant-time compare (timing attack safe)
 \`\`\`
 
 **Rule:** anything security-sensitive (session tokens, reset links, API keys, passwords) → \`secrets\`. Anything else → \`random\`.`,
+        },
+        {
+          q: "✅ Good vs ❌ Bad — money and float math",
+          a: `**✅ Good — \`Decimal\` for money, \`math.isclose\` for floats**
+
+\`\`\`python
+from decimal import Decimal, ROUND_HALF_EVEN
+
+price = Decimal("19.99")
+tax   = Decimal("0.0825")
+total = (price * (1 + tax)).quantize(Decimal("0.01"), ROUND_HALF_EVEN)
+
+# floats only when approximation is fine:
+if math.isclose(measured, expected, rel_tol=1e-6): ...
+\`\`\`
+
+**Why:** \`Decimal\` has exact base-10 arithmetic and explicit rounding — legally defensible for currency. For floats, \`isclose\` handles relative and absolute tolerance correctly.
+
+**❌ Bad — Float money, \`==\` compare**
+
+\`\`\`python
+price = 19.99
+tax = 0.0825
+total = round(price * (1 + tax), 2)       # 21.63 or 21.64? depends on CPU
+
+if 0.1 + 0.2 == 0.3:                     # False — base-2 rounding
+    ...                                  # your unit test is lying
+\`\`\`
+
+**Why bad:** Binary floats can't represent 0.1 or 0.2 exactly, so sums drift. Using \`round\` hides it sometimes; an audit or a different rounding mode surfaces the pennies that don't add up.`,
         },
       ],
     },
@@ -7385,6 +7771,33 @@ def fib(n):
 \`\`\`
 
 **Rule:** for depths over a few hundred, convert to iteration. Python's lack of TCO means even correct tail-recursive code fails.`,
+        },
+        {
+          q: "✅ Good vs ❌ Bad — default arguments",
+          a: `**✅ Good — \`None\` + build inside the body**
+
+\`\`\`python
+def append_log(msg: str, history: list[str] | None = None) -> list[str]:
+    history = [] if history is None else history
+    history.append(msg)
+    return history
+\`\`\`
+
+**Why:** The sentinel \`None\` gives you "build a fresh one if caller didn't pass one" without sharing mutable state across calls. Type hints make the intent readable.
+
+**❌ Bad — Mutable default**
+
+\`\`\`python
+def append_log(msg: str, history: list[str] = []) -> list[str]:
+    history.append(msg)
+    return history
+
+append_log("a")          # ["a"]
+append_log("b")          # ["a", "b"]  ← surprise
+append_log("c")          # ["a", "b", "c"]
+\`\`\`
+
+**Why bad:** Default values are evaluated **once** at function definition. \`history=[]\` becomes a single list shared by every call that omits the argument — state leaks across unrelated callers.`,
         },
       ],
     },
@@ -7613,6 +8026,34 @@ logging.getLogger(__name__).addHandler(logging.NullHandler())
 - Run side-effectful code (network calls, DB connects, file writes)
 - Define your actual code here — use submodules and re-export`,
         },
+        {
+          q: "✅ Good vs ❌ Bad — imports",
+          a: `**✅ Good — Absolute imports, explicit \`__all__\`**
+
+\`\`\`python
+# app/services/pricing.py
+from app.models.order import Order
+from app.services.tax import TaxService
+
+__all__ = ["price_order"]
+
+def price_order(order: Order, tax: TaxService) -> Decimal: ...
+\`\`\`
+
+**Why:** Absolute imports work regardless of how the file is invoked. \`__all__\` documents the public API and limits what \`from mod import *\` exposes (when unavoidable).
+
+**❌ Bad — Star imports & deep relatives**
+
+\`\`\`python
+from ...utils import *              # what does this pull in?
+from .models import *               # shadows builtins?
+
+# Three files later:
+# NameError: name 'date' is not defined — got shadowed by a helper
+\`\`\`
+
+**Why bad:** Star imports pollute the namespace — you can't tell where \`date\` comes from. Deep relative imports break when a file is moved or imported as a script. Both make refactors a grep-and-hope exercise.`,
+        },
       ],
     },
 
@@ -7813,6 +8254,35 @@ class User:
 - **Pydantic** → HTTP/JSON boundary, config, anything untrusted
 - **attrs** → internal objects with custom validation
 - **dataclass** → pure internal data, no validation needed`,
+        },
+        {
+          q: "✅ Good vs ❌ Bad — type hints",
+          a: `**✅ Good — Hints + runtime validation at boundaries**
+
+\`\`\`python
+from pydantic import BaseModel
+
+class ChargeRequest(BaseModel):
+    user_id: int
+    amount_cents: int
+
+def charge(req: ChargeRequest) -> str:
+    ...                                   # inside, types are real
+\`\`\`
+
+**Why:** Hints document intent for the reader and mypy/pyright. Pydantic / dataclasses enforce them at the boundary where untrusted data enters, so the rest of the codebase can trust the shape.
+
+**❌ Bad — Hints that lie**
+
+\`\`\`python
+def get_user(user_id: int) -> User:
+    row = db.fetch_one(...)
+    if not row:
+        return None                       # signature says User!
+    return User(**row)                    # and sometimes a dict-by-accident
+\`\`\`
+
+**Why bad:** A lying annotation is worse than none — reviewers, IDE autocomplete, and static analysis all trust it. The caller writes \`user.name\`, prod returns \`None\`, and the stack trace points nowhere useful.`,
         },
       ],
     },
@@ -8112,6 +8582,32 @@ with subprocess.Popen(
 
 **Security:** never pass user input via \`shell=True\`. Pass a list of args. If you must use a shell, use \`shlex.quote\`.`,
         },
+        {
+          q: "✅ Good vs ❌ Bad — reach for stdlib first",
+          a: `**✅ Good — Use \`collections\`, \`itertools\`, \`pathlib\`**
+
+\`\`\`python
+from collections import Counter
+from pathlib import Path
+
+words = Path("book.txt").read_text().split()
+top5 = Counter(words).most_common(5)    # one line, fast, correct
+\`\`\`
+
+**Why:** stdlib containers are C-speed, well-tested, and read as intent. \`pathlib.Path\` handles separators, encodings, and existence checks cleanly compared to string concatenation.
+
+**❌ Bad — Reinvent the wheel**
+
+\`\`\`python
+counts = {}
+with open("book.txt") as f:            # no encoding, no path join
+    for w in f.read().split():
+        counts[w] = counts.get(w, 0) + 1
+top5 = sorted(counts.items(), key=lambda kv: -kv[1])[:5]
+\`\`\`
+
+**Why bad:** Five lines doing what \`Counter.most_common\` does in one — more surface area for off-by-one bugs, slower, and missing encoding/path handling that \`pathlib\` gives for free.`,
+        },
       ],
     },
 
@@ -8217,6 +8713,32 @@ os.close(fd)
 \`\`\`
 
 Never use \`/tmp/myfile\` — predictable names are a security risk (symlink attacks).`,
+        },
+        {
+          q: "✅ Good vs ❌ Bad — reading files",
+          a: `**✅ Good — \`with\`, explicit encoding, stream**
+
+\`\`\`python
+from pathlib import Path
+
+def parse(path: Path):
+    with path.open(encoding="utf-8") as f:
+        for line in f:                   # lazy, constant memory
+            yield parse_line(line)
+\`\`\`
+
+**Why:** \`with\` guarantees close even on exception. Explicit encoding is portable. Iterating the file object streams line-by-line — memory stays flat even on a 10 GB log.
+
+**❌ Bad — \`open()\` forever, \`read()\` everything**
+
+\`\`\`python
+f = open("data.csv")                  # leaks on exception
+content = f.read()                     # 10 GB → OOM
+rows = content.split("\\n")          # another 10 GB copy
+# f.close() ... did anyone remember?
+\`\`\`
+
+**Why bad:** An unclosed file on Windows blocks the file from being deleted. \`read()\` + \`split\` doubles memory. A 10× bigger input than you tested with is how this hits prod on a Sunday.`,
         },
       ],
     },
@@ -8428,6 +8950,47 @@ exclude_lines = [
 
 **CI checks to run on every PR:** \`ruff check\`, \`ruff format --check\`, \`mypy\`, \`pytest --cov\`, \`bandit\` (security).`,
         },
+        {
+          q: "✅ Good vs ❌ Bad — writing tests",
+          a: `**✅ Good — Fixtures + parametrize**
+
+\`\`\`python
+import pytest
+
+@pytest.fixture
+def cart():
+    return Cart(user_id=42)
+
+@pytest.mark.parametrize("items,total", [
+    ([],            0),
+    ([Apple()],     100),
+    ([Apple()]*3,   300),
+])
+def test_total(cart, items, total):
+    for i in items: cart.add(i)
+    assert cart.total() == total
+\`\`\`
+
+**Why:** Fixtures share setup, parametrize expresses N scenarios as one test. When a bug appears, you add a row — the diff is one line, not a new copy-pasted function.
+
+**❌ Bad — Copy-paste tests + mock everything**
+
+\`\`\`python
+def test_empty():
+    cart = Cart(42)
+    assert cart.total() == 0
+
+def test_one():
+    cart = Cart(42); cart.add(Apple())       # setup duplicated
+    assert cart.total() == 100
+
+def test_three_mocked():
+    with patch("app.cart.Apple") as A:       # mocking your own class
+        ...                                    # tests the mock, not the code
+\`\`\`
+
+**Why bad:** Duplicated setup rots independently across tests — one gets updated, others don't. Over-mocking tests the fake, not the real behavior; the test passes while prod is broken.`,
+        },
       ],
     },
 
@@ -8594,6 +9157,34 @@ for stat in after.compare_to(before, "lineno")[:10]:
     print(stat)
 \`\`\``,
         },
+        {
+          q: "✅ Good vs ❌ Bad — making code faster",
+          a: `**✅ Good — Measure, then optimize the hot path**
+
+\`\`\`python
+import cProfile
+
+cProfile.run("process_orders(orders)", sort="cumulative")
+# Top frame: parse_date called 1M times, 4.2s total
+# → cache it with @lru_cache(maxsize=10_000)
+\`\`\`
+
+**Why:** Profilers tell you **where** time goes — almost always not where your gut says. Micro-optimizing a cold path is wasted effort; caching the one hot function moves the needle.
+
+**❌ Bad — Premature micro-optimization**
+
+\`\`\`python
+# "I read that deque is faster than list, let's swap everywhere"
+from collections import deque
+items = deque()
+for x in data: items.append(x)
+
+# Total savings: 3ms on a 500ms request. Readability: worse.
+# The actual bottleneck: an unindexed DB column.
+\`\`\`
+
+**Why bad:** Swapping data structures for microscopic gains doesn't move 95th-percentile latency. The real wins are almost always I/O (DB indexes, N+1, network) — the profile proves it in 30 seconds.`,
+        },
       ],
     },
 
@@ -8705,6 +9296,40 @@ secret = sm.get_secret_value(SecretId="prod/db")["SecretString"]
 # 5. Scan for leaked secrets before commit
 # pip install detect-secrets ; pre-commit hook
 \`\`\``,
+        },
+        {
+          q: "✅ Good vs ❌ Bad — handling user input & secrets",
+          a: `**✅ Good — Parameters, \`secrets\`, \`bcrypt\`**
+
+\`\`\`python
+import secrets, bcrypt
+
+token = secrets.token_urlsafe(32)                # CSPRNG
+
+hashed = bcrypt.hashpw(pw.encode(), bcrypt.gensalt(12))
+
+cur.execute(
+    "SELECT * FROM users WHERE email = %s",
+    (email,),                                    # parameterized
+)
+\`\`\`
+
+**Why:** \`secrets\` uses the OS CSPRNG — safe for tokens. \`bcrypt\` is slow-by-design, making brute force infeasible. Parameterized queries make SQL injection structurally impossible.
+
+**❌ Bad — String interpolation + fast hashes**
+
+\`\`\`python
+import random, hashlib
+
+token = str(random.random())                     # predictable — not CSPRNG
+
+hashed = hashlib.sha1(pw.encode()).hexdigest()   # cracked by GPU in minutes
+
+cur.execute(f"SELECT * FROM users WHERE email = '{email}'")  # SQLi
+# email = "' OR 1=1 --" → whole table leaks
+\`\`\`
+
+**Why bad:** \`random\` is seeded from predictable state — tokens are guessable. SHA-1/MD5 are built to be *fast*, which is exactly wrong for passwords. f-string SQL is textbook injection that CVEs still get filed for in 2026.`,
         },
       ],
     },
@@ -8953,6 +9578,36 @@ async def consumer():
 \`\`\`
 
 **When to use \`asyncio.Lock\`?** Rarely. Coroutines run sequentially until they \`await\` — most shared-state bugs from threading don't exist here. You need it if a task holds shared state across multiple \`await\` points.`,
+        },
+        {
+          q: "✅ Good vs ❌ Bad — concurrency in async",
+          a: `**✅ Good — \`gather\`, timeouts, and async I/O**
+
+\`\`\`python
+async def fetch_all(urls):
+    async with asyncio.timeout(5):              # 3.11+
+        async with aiohttp.ClientSession() as s:
+            return await asyncio.gather(
+                *(s.get(u) for u in urls)
+            )
+\`\`\`
+
+**Why:** \`gather\` runs the coroutines concurrently — 100 fetches in ≈1 round-trip, not 100. \`asyncio.timeout\` caps the total wall time; one slow host can't hang the whole request.
+
+**❌ Bad — \`await\` in a loop + sync I/O**
+
+\`\`\`python
+async def fetch_all(urls):
+    results = []
+    for u in urls:
+        results.append(await aiohttp_get(u))    # serialized
+    return results
+
+async def handler():
+    data = requests.get(URL).json()             # blocks the loop
+\`\`\`
+
+**Why bad:** \`await\` inside a loop serializes what was supposed to be parallel — you've written \`async\` that runs sync. Sync libraries (\`requests\`, \`time.sleep\`) freeze the whole event loop for every connected user.`,
         },
       ],
     },
@@ -9207,6 +9862,34 @@ async def fetch_user(user_id: int):
 
 **When async DB actually helps:** high-concurrency APIs (FastAPI with many concurrent requests). Low-concurrency or CPU-bound apps get no benefit.`,
         },
+        {
+          q: "✅ Good vs ❌ Bad — ORM queries",
+          a: `**✅ Good — Eager load + transaction**
+
+\`\`\`python
+from sqlalchemy.orm import selectinload
+
+with Session() as s, s.begin():
+    users = s.scalars(
+        select(User).options(selectinload(User.orders))
+    ).all()
+    for u in users:
+        print(u.name, len(u.orders))            # no extra queries
+\`\`\`
+
+**Why:** \`selectinload\` fetches users + all their orders in **two** queries total. The explicit \`begin()\` gives you ACID — either everything commits or nothing does.
+
+**❌ Bad — N+1 query**
+
+\`\`\`python
+users = session.scalars(select(User)).all()    # 1 query
+for u in users:                                 # + N queries
+    print(u.name, len(u.orders))                # lazy-load each time
+# Endpoint p99 climbs linearly with #users — classic production incident.
+\`\`\`
+
+**Why bad:** Attribute access triggers a DB round-trip per row. 100 users = 101 queries, each with network latency — your p99 grows with data. This is the single most common ORM anti-pattern in prod.`,
+        },
       ],
     },
 
@@ -9364,6 +10047,37 @@ pytest --forked                    # pytest-forked: each test in its own process
 - Network / DB / filesystem state
 - Concurrency races (especially in async code)
 - Garbage collection timing (use \`gc.collect()\` at setUp)`,
+        },
+        {
+          q: "✅ Good vs ❌ Bad — diagnosing a bug",
+          a: `**✅ Good — Logs with structure, \`breakpoint()\`, specific \`except\`**
+
+\`\`\`python
+log = logging.getLogger(__name__)
+
+try:
+    result = charge(order_id, amount)
+except PaymentError as e:
+    log.exception(
+        "charge failed",
+        extra={"order_id": order_id, "amount": amount, "err": str(e)},
+    )
+    raise                                       # don't swallow
+\`\`\`
+
+**Why:** \`logging\` + structured fields is searchable in Datadog/Loki. \`log.exception\` keeps the stack trace. Re-raising preserves the original error — the next layer decides what to do.
+
+**❌ Bad — \`print\` + bare \`except\`**
+
+\`\`\`python
+try:
+    result = charge(order_id, amount)
+except:                                         # catches SystemExit too
+    print("oops")                             # not in log aggregator
+    return None                                 # original error lost forever
+\`\`\`
+
+**Why bad:** Bare \`except:\` catches \`KeyboardInterrupt\` and \`SystemExit\` — you can't even Ctrl-C the server. \`print\` in prod goes to nowhere useful. Returning \`None\` on error turns a crash into a silent corruption.`,
         },
       ],
     },
@@ -9601,6 +10315,45 @@ class Cat(Animal):
 \`\`\`
 
 Catches typos, signature drift, and accidental "new method thought to be override" bugs. A great habit in any project with inheritance.`,
+        },
+        {
+          q: "✅ Good vs ❌ Bad — embrace 3.10+ features",
+          a: `**✅ Good — \`match\`, \`|\` unions, \`dataclass(slots=True)\`**
+
+\`\`\`python
+from dataclasses import dataclass
+
+@dataclass(slots=True, frozen=True)
+class Point:
+    x: float
+    y: float
+
+def classify(shape: Point | Circle | None) -> str:
+    match shape:
+        case None:                   return "empty"
+        case Point(0, 0):            return "origin"
+        case Point(x, y):            return f"point({x},{y})"
+        case Circle(r=r):            return f"circle r={r}"
+\`\`\`
+
+**Why:** \`match\` does destructuring + type check in one expression. \`slots=True\` drops memory ~40% for many small objects. \`X | Y\` reads cleaner than \`Union[X, Y]\` and doesn't need an import.
+
+**❌ Bad — \`isinstance\` chains, \`Union\`, no slots**
+
+\`\`\`python
+from typing import Union, Optional
+
+def classify(shape: Optional[Union[Point, Circle]]) -> str:
+    if shape is None:
+        return "empty"
+    elif isinstance(shape, Point):
+        if shape.x == 0 and shape.y == 0: return "origin"
+        return f"point({shape.x},{shape.y})"
+    elif isinstance(shape, Circle):
+        return f"circle r={shape.r}"
+\`\`\`
+
+**Why bad:** Six more lines, an import, repeated \`shape.\` access, no destructuring. Nothing is *wrong* — it's just 2016 Python. New code should read like the current decade.`,
         },
       ],
     },
@@ -10024,6 +10777,37 @@ from collections import ChainMap
 view = ChainMap(b, a)             # b overrides a, no actual merge
 \`\`\``,
         },
+        {
+          q: "✅ Good vs ❌ Bad — copying mutable data",
+          a: `**✅ Good — Right level of copy, immutable when possible**
+
+\`\`\`python
+import copy
+
+# shallow — independent outer, shared inner
+shallow = list(users)                         # or users.copy()
+
+# deep — everything independent
+deep = copy.deepcopy(config)                  # nested dicts, etc.
+
+# best — don't mutate: use frozen dataclass / tuple
+\`\`\`
+
+**Why:** Match the copy depth to how the data is nested. Better yet, make the data **immutable** so "did I copy enough?" stops being a question.
+
+**❌ Bad — Shallow copy, then mutate the inside**
+
+\`\`\`python
+default = {"roles": ["viewer"]}
+user_a = dict(default)                         # shallow
+user_b = dict(default)                         # shallow
+
+user_a["roles"].append("admin")             # shared list!
+user_b["roles"]                               # ["viewer", "admin"] — oops
+\`\`\`
+
+**Why bad:** \`dict(default)\` copies the top level but the \`roles\` list is still one object in memory. Appending through one key mutates every "copy" — the kind of bug that only shows up in prod when two users are active.`,
+        },
       ],
     },
 
@@ -10176,6 +10960,36 @@ def handler(cb: Callable[[int], None]) -> Optional[str]:
 \`\`\`
 
 Tools: \`mypy\`, \`pyright\`, \`ruff\`. Types improve IDEs, catch bugs early.`,
+        },
+        {
+          q: "✅ Good vs ❌ Bad — modern idioms",
+          a: `**✅ Good — \`|\`, walrus, \`zip(strict=True)\`**
+
+\`\`\`python
+merged = defaults | overrides                   # 3.9+
+
+if (n := len(buf)) > LIMIT:
+    flush(buf, n)                               # use walrus result
+
+for row, meta in zip(rows, metadata, strict=True):  # 3.10+
+    ...                                         # crashes on length mismatch
+\`\`\`
+
+**Why:** Each idiom removes a class of bug: \`|\` avoids mutating \`defaults\`, walrus avoids double-compute, \`strict=True\` crashes loudly instead of silently truncating mismatched data.
+
+**❌ Bad — Manual dict merge, double compute, silent zip**
+
+\`\`\`python
+merged = dict(defaults)                         # mutating next is tempting
+merged.update(overrides)
+
+if len(buf) > LIMIT:                            # compute 1
+    flush(buf, len(buf))                        # compute 2
+
+for row, meta in zip(rows, metadata):           # silently drops the tail
+\`\`\`
+
+**Why bad:** Four lines for what \`|\` does in one. Double-computing \`len(buf)\` is fine on lists but quadratic on generators. Silent \`zip\` truncation has produced real audit incidents — missing customer rows aren't caught by tests.`,
         },
       ],
     },
@@ -10578,6 +11392,36 @@ def withdraw(amount):
     if amount <= 0:
         raise ValueError("amount must be positive")
 \`\`\``,
+        },
+        {
+          q: "✅ Good vs ❌ Bad — error handling",
+          a: `**✅ Good — Specific except, \`raise from\`, context managers**
+
+\`\`\`python
+class ChargeRejected(Exception): ...
+
+try:
+    stripe.charge(order)
+except stripe.CardDeclined as e:
+    raise ChargeRejected(order.id) from e      # keeps original cause
+except stripe.RateLimitError:
+    raise                                       # let caller retry
+\`\`\`
+
+**Why:** Specific \`except\` types let each error be handled correctly. \`raise X from e\` preserves the original in \`__cause__\` so the full chain is visible in the log. Nothing is silently swallowed.
+
+**❌ Bad — Bare except, lose the cause**
+
+\`\`\`python
+try:
+    stripe.charge(order)
+except Exception:
+    raise ChargeRejected(order.id)              # original stack lost
+except:
+    pass                                         # includes SystemExit!
+\`\`\`
+
+**Why bad:** \`except Exception\` without \`from e\` wipes the real cause — debug logs point at the re-raise line, not the actual network/4xx failure. Bare \`except:\` catches shutdown signals — you can't stop the process cleanly.`,
         },
       ],
     },
