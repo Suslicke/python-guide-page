@@ -4,7 +4,7 @@ A comprehensive Python interview preparation guide covering 268 topics across 28
 
 ## Features
 
-- ⭐ **EPAM Must-Have** section — the 20 essential topics, curated
+- ⭐ **Interview Must-Have** section — the 20 essential topics, curated
 - 🔍 Full-text search across all topics
 - 🏷️ Category filtering (Basics, OOP, Advanced, Std Lib, Testing, etc.)
 - ✅ Progress tracking with auto-saved checkboxes (localStorage)

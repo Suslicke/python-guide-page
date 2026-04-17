@@ -1,5 +1,5 @@
-import { useState, useMemo, useEffect } from "react";
-import { ChevronRight, ChevronDown, Check, Search, BookOpen, Code2, Cpu, Database, Layers, Lightbulb, Zap, Target, AlertTriangle, Box, GitBranch, Flame, Brain, Terminal, Shield, Package, Sparkles, RotateCcw } from "lucide-react";
+import { useState, useMemo, useEffect, useRef } from "react";
+import { ChevronRight, ChevronDown, Check, Search, BookOpen, Code2, Cpu, Database, Layers, Lightbulb, Zap, Target, AlertTriangle, Box, GitBranch, Flame, Brain, Terminal, Shield, Package, Sparkles, RotateCcw, X, Command } from "lucide-react";
 
 export default function PythonInterviewPrep() {
   const [openSections, setOpenSections] = useState({ 0: true });
@@ -8,6 +8,39 @@ export default function PythonInterviewPrep() {
   const [activeCategory, setActiveCategory] = useState("all");
   const [storageReady, setStorageReady] = useState(false);
   const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
+  const searchRef = useRef(null);
+
+  // Global keyboard shortcuts: "/" or "⌘K"/"Ctrl+K" focus the search, Esc clears it
+  useEffect(() => {
+    const onKey = (e) => {
+      const target = e.target;
+      const tag = target?.tagName;
+      const isTyping =
+        tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable;
+      const isModK = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k";
+      const isSlash = e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey;
+
+      if (isModK) {
+        e.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
+      } else if (isSlash && !isTyping) {
+        e.preventDefault();
+        searchRef.current?.focus();
+      } else if (
+        e.key === "Escape" &&
+        document.activeElement === searchRef.current
+      ) {
+        if (searchRef.current?.value) {
+          setQuery("");
+        } else {
+          searchRef.current?.blur();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // Load saved checkboxes on mount
   useEffect(() => {
@@ -56,16 +89,16 @@ export default function PythonInterviewPrep() {
   const tick = (id) => setChecked((c) => ({ ...c, [id]: !c[id] }));
 
   const sections = [
-    // ============ EPAM MUST-HAVE ============
+    // ============ INTERVIEW MUST-HAVE ============
     {
       cat: "must",
       icon: <Flame size={18} />,
-      title: "⭐ EPAM Interview Must-Have — The Short List",
+      title: "⭐ Interview Must-Have — The Short List",
       level: "For Monday",
       items: [
         {
           q: "How to use this section",
-          a: `If you have **limited time**, focus here. These are the topics EPAM (and similar large consultancies) ask on almost every Python interview — Trainee through Senior. Everything below is a **quick reference / cheat sheet**. For deep dives, follow the pointers to the full sections.
+          a: `If you have **limited time**, focus here. These are the topics asked on almost every Python interview — Trainee through Senior. Everything below is a **quick reference / cheat sheet**. For deep dives, follow the pointers to the full sections.
 
 **Interview day plan:**
 1. Go through this list cold — if you stumble on anything, go to the full section and review
@@ -10427,7 +10460,7 @@ def withdraw(amount):
 
   const categories = [
     { id: "all", label: "Everything" },
-    { id: "must", label: "⭐ EPAM Must-Have" },
+    { id: "must", label: "⭐ Interview Must-Have" },
     { id: "basics", label: "Basics" },
     { id: "oop", label: "OOP" },
     { id: "advanced", label: "Advanced" },
@@ -10457,9 +10490,44 @@ def withdraw(amount):
       .filter((sec) => sec.items.length > 0);
   }, [query, activeCategory]);
 
+  const matchCount = useMemo(
+    () => filtered.reduce((n, s) => n + s.items.length, 0),
+    [filtered]
+  );
+
   const totalItems = sections.reduce((n, s) => n + s.items.length, 0);
   const checkedCount = Object.values(checked).filter(Boolean).length;
   const progress = Math.round((checkedCount / totalItems) * 100);
+
+  // Highlight all case-insensitive occurrences of `q` inside `text`.
+  // Uses indexOf (no regex) so user input doesn't need escaping.
+  const highlight = (text, q) => {
+    const needle = q.trim();
+    if (!needle) return text;
+    const lower = text.toLowerCase();
+    const lowerNeedle = needle.toLowerCase();
+    const parts = [];
+    let i = 0;
+    let key = 0;
+    while (i < text.length) {
+      const hit = lower.indexOf(lowerNeedle, i);
+      if (hit === -1) {
+        parts.push(text.slice(i));
+        break;
+      }
+      if (hit > i) parts.push(text.slice(i, hit));
+      parts.push(
+        <mark
+          key={key++}
+          className="bg-teal-400/25 text-teal-100 rounded px-0.5 py-[1px]"
+        >
+          {text.slice(hit, hit + needle.length)}
+        </mark>
+      );
+      i = hit + needle.length;
+    }
+    return parts;
+  };
 
   // Simple markdown-ish renderer: code blocks + inline code + bold
   const renderAnswer = (text) => {
@@ -10571,28 +10639,78 @@ def withdraw(amount):
       </div>
 
       {/* Controls */}
-      <div className="sticky top-0 z-20 border-b border-zinc-800 bg-[#14161a]/95 backdrop-blur-sm">
-        <div className="max-w-6xl mx-auto px-6 py-3 flex flex-col md:flex-row gap-3 md:items-center">
-          <div className="relative flex-1">
-            <Search
-              size={16}
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500"
+      <div className="sticky top-0 z-20 border-b border-zinc-800 bg-[#14161a]/90 backdrop-blur-md">
+        <div className="max-w-6xl mx-auto px-6 py-4 space-y-3">
+          {/* Big search */}
+          <div className="relative group">
+            {/* Teal glow behind input on focus */}
+            <div
+              aria-hidden
+              className="pointer-events-none absolute -inset-px rounded-xl opacity-0 group-focus-within:opacity-100 transition-opacity duration-300"
+              style={{
+                background:
+                  "radial-gradient(120% 140% at 50% 0%, rgba(45,212,191,0.25), rgba(45,212,191,0) 60%)",
+                filter: "blur(14px)",
+              }}
             />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search decorators, GIL, MRO, hash, …"
-              className="w-full bg-[#1a1d22] border border-zinc-800 rounded-md pl-10 pr-3 py-2 text-zinc-100 text-sm placeholder-zinc-500 focus:outline-none focus:border-teal-600 transition"
-            />
+            <div className="relative flex items-center">
+              <Search
+                size={18}
+                className="absolute left-4 text-zinc-500 group-focus-within:text-teal-400 transition-colors"
+              />
+              <input
+                ref={searchRef}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search decorators, GIL, MRO, hashing, sliding window…"
+                aria-label="Search questions"
+                className="w-full bg-[#1a1d22] border border-zinc-800 rounded-xl pl-12 pr-36 py-3.5 text-zinc-100 text-[15px] placeholder-zinc-500 focus:outline-none focus:border-teal-500/70 focus:ring-2 focus:ring-teal-500/20 shadow-[0_1px_0_rgba(255,255,255,0.02)_inset] transition-all"
+              />
+              <div className="absolute right-3 flex items-center gap-2">
+                {query ? (
+                  <>
+                    <span
+                      className="text-[11px] font-medium text-teal-400 tabular-nums"
+                      aria-live="polite"
+                    >
+                      {matchCount} {matchCount === 1 ? "match" : "matches"}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setQuery("");
+                        searchRef.current?.focus();
+                      }}
+                      className="p-1.5 rounded-md text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 transition"
+                      aria-label="Clear search"
+                    >
+                      <X size={14} />
+                    </button>
+                  </>
+                ) : (
+                  <div className="hidden sm:flex items-center gap-1 text-[10px] text-zinc-500 font-medium">
+                    <kbd className="px-1.5 py-0.5 rounded border border-zinc-700 bg-[#0d0f12] font-mono leading-none">
+                      /
+                    </kbd>
+                    <span className="text-zinc-600">or</span>
+                    <kbd className="px-1.5 py-0.5 rounded border border-zinc-700 bg-[#0d0f12] font-mono inline-flex items-center gap-0.5 leading-none">
+                      <Command size={10} />K
+                    </kbd>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
-          <div className="flex flex-wrap gap-1.5">
+
+          {/* Category pills — horizontal scroll on small screens, wrap on large */}
+          <div className="flex flex-nowrap md:flex-wrap gap-1.5 overflow-x-auto md:overflow-visible -mx-1 px-1 pb-0.5 md:pb-0">
             {categories.map((c) => (
               <button
                 key={c.id}
                 onClick={() => setActiveCategory(c.id)}
-                className={`text-[11px] uppercase tracking-wider px-3 py-1.5 rounded-md border transition font-medium ${
+                className={`flex-shrink-0 text-[11px] uppercase tracking-wider px-3 py-1.5 rounded-md border transition font-medium ${
                   activeCategory === c.id
-                    ? "bg-teal-500 text-zinc-900 border-teal-500"
+                    ? "bg-teal-500 text-zinc-900 border-teal-500 shadow-[0_0_0_3px_rgba(20,184,166,0.15)]"
                     : "bg-[#1a1d22] text-zinc-400 border-zinc-800 hover:border-zinc-600 hover:text-zinc-200"
                 }`}
               >
@@ -10606,8 +10724,30 @@ def withdraw(amount):
       {/* Content */}
       <div className="max-w-6xl mx-auto px-6 py-8 space-y-3">
         {filtered.length === 0 && (
-          <div className="text-center py-20 text-zinc-500 text-sm">
-            No matches. Try a different search.
+          <div className="text-center py-20">
+            <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-[#1a1d22] border border-zinc-800 mb-4">
+              <Search size={18} className="text-zinc-500" />
+            </div>
+            <p className="text-zinc-300 text-sm font-medium">
+              No matches for{" "}
+              <span className="text-teal-400">“{query}”</span>
+            </p>
+            <p className="mt-1 text-zinc-500 text-xs">
+              Try a shorter query or switch category.
+            </p>
+            {(query || activeCategory !== "all") && (
+              <button
+                onClick={() => {
+                  setQuery("");
+                  setActiveCategory("all");
+                  searchRef.current?.focus();
+                }}
+                className="mt-4 inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-zinc-400 hover:text-teal-400 border border-zinc-800 hover:border-teal-900 rounded-md px-3 py-1.5 transition"
+              >
+                <RotateCcw size={12} />
+                Reset filters
+              </button>
+            )}
           </div>
         )}
 
@@ -10677,7 +10817,7 @@ def withdraw(amount):
                                   : "text-zinc-100"
                               }`}
                             >
-                              {it.q}
+                              {highlight(it.q, query)}
                             </h3>
                             <div className="text-zinc-300 text-[14px] leading-relaxed">
                               {renderAnswer(it.a)}
