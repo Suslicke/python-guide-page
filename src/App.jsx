@@ -11440,6 +11440,100 @@ except:
 
 **Why bad:** \`except Exception\` without \`from e\` wipes the real cause — debug logs point at the re-raise line, not the actual network/4xx failure. Bare \`except:\` catches shutdown signals — you can't stop the process cleanly.`,
         },
+        {
+          q: "Checklist: which `raise` to use (+ custom exceptions)",
+          a: `A decision table for the four \`raise\` forms, then a minimal custom-exception hierarchy you can drop straight into a real service.
+
+| What you write | When to use | Why |
+|---|---|---|
+| \`raise\` | Loggers, middleware, anything that just *observes* | Preserves the original stack 100%. You're just passing through. |
+| \`raise New from e\` | Layer-to-layer conversions (DB → service → API) | Production mainstream. Shows both *what happened* (business meaning) and *why* (technical cause). |
+| \`raise New from None\` | Public APIs / security-sensitive code | Hides internals (passwords in connection strings, file paths, credentials). Safe by design. |
+| \`raise e\` | **Never** | It's a lie. You overwrite the crash site with the current line — traceback now points to the re-raise, not the bug. |
+
+**Minimal production-ready custom exceptions**
+
+\`\`\`python
+# app/errors.py
+class AppError(Exception):
+    """Base for anything intentionally raised by our code.
+    Caught exactly once at the HTTP edge.
+    """
+    code: str = "internal_error"
+    http_status: int = 500
+
+    def __init__(self, message: str = "", **context):
+        super().__init__(message or self.code)
+        self.context = context
+
+    def to_dict(self) -> dict:
+        return {"code": self.code, "message": str(self), **self.context}
+
+
+class NotFound(AppError):         code, http_status = "not_found", 404
+class Conflict(AppError):         code, http_status = "conflict", 409
+class Unauthorized(AppError):     code, http_status = "unauthorized", 401
+class ValidationFailed(AppError): code, http_status = "validation_failed", 422
+class UpstreamError(AppError):    code, http_status = "upstream_unavailable", 502
+\`\`\`
+
+**Using them in a service layer**
+
+\`\`\`python
+# app/services/orders.py
+import logging
+from app.errors import NotFound, Conflict, UpstreamError
+
+log = logging.getLogger(__name__)
+
+def cancel_order(order_id: int) -> None:
+    order = db.orders.get(order_id)
+    if order is None:
+        raise NotFound("order does not exist", order_id=order_id)
+    if order.status == "shipped":
+        raise Conflict("cannot cancel a shipped order", order_id=order_id)
+
+    try:
+        payments.refund(order.charge_id)
+    except stripe.CardError as e:
+        # Known upstream failure → wrap AND keep the cause for debugging.
+        raise UpstreamError("refund rejected by provider") from e
+    except Exception:
+        # Unknown failure → log the full trace internally,
+        # but drop the cause before it reaches the client (from None).
+        log.exception("unexpected refund failure", extra={"order_id": order_id})
+        raise UpstreamError("refund failed") from None
+
+    db.orders.update(order_id, status="cancelled")
+\`\`\`
+
+**One handler at the HTTP edge (FastAPI — Flask/Django is ~10 lines)**
+
+\`\`\`python
+# app/web.py
+@app.exception_handler(AppError)
+async def on_app_error(request, exc: AppError):
+    # Any intentional failure → structured 4xx/5xx, every time.
+    log.warning(
+        "app_error",
+        extra={"code": exc.code, "path": request.url.path, **exc.context},
+    )
+    return JSONResponse(exc.to_dict(), status_code=exc.http_status)
+
+@app.exception_handler(Exception)
+async def on_unexpected(request, exc: Exception):
+    # Anything NOT an AppError is a real bug → log, return opaque 500.
+    log.exception("unhandled", extra={"path": request.url.path})
+    return JSONResponse({"code": "internal_error"}, status_code=500)
+\`\`\`
+
+**Why this shape works in production**
+
+- **Two exception classes catch everything.** \`AppError\` for known failures, bare \`Exception\` for bugs. Two handlers — nothing slips through to a default 500 with an HTML page.
+- **Context is structured, not stringified.** \`NotFound("...", order_id=42)\` stores \`order_id\` on the exception, so logs are searchable and the response body is already a real JSON object.
+- **\`from e\` vs \`from None\` is a deliberate security decision.** Known errors keep the cause (easier debugging). Unknown failures and anything touching auth/payments drop it — no credentials or internal paths in stack traces going to Sentry or the client.
+- **HTTP status is a class attribute, not sprinkled through the code.** Adding a new error type is one class — no handler wiring needed.`,
+        },
       ],
     },
   ];
