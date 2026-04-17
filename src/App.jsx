@@ -119,7 +119,34 @@ export default function PythonInterviewPrep() {
   };
 
   const toggle = (i) => setOpenSections((s) => ({ ...s, [i]: !s[i] }));
-  const tick = (id) => setChecked((c) => ({ ...c, [id]: !c[id] }));
+
+  // Last checked item — anchor for Shift+click range selection
+  const [lastCheckedId, setLastCheckedId] = useState(null);
+
+  const tick = (id, shiftKey) => {
+    if (shiftKey && lastCheckedId && lastCheckedId !== id) {
+      // Flat ordered list of ids across the CURRENTLY VISIBLE (filtered) items
+      const orderedIds = filtered.flatMap((sec) =>
+        sec.items.map((_, i) => `${sec.idx}-${i}`)
+      );
+      const a = orderedIds.indexOf(lastCheckedId);
+      const b = orderedIds.indexOf(id);
+      if (a !== -1 && b !== -1) {
+        const [from, to] = a < b ? [a, b] : [b, a];
+        const rangeIds = orderedIds.slice(from, to + 1);
+        const target = !checked[id]; // direction = the new state of the clicked item
+        setChecked((c) => {
+          const next = { ...c };
+          for (const rid of rangeIds) next[rid] = target;
+          return next;
+        });
+        setLastCheckedId(id);
+        return;
+      }
+    }
+    setChecked((c) => ({ ...c, [id]: !c[id] }));
+    setLastCheckedId(id);
+  };
 
   const sections = [
     // ============ INTERVIEW MUST-HAVE ============
@@ -10827,13 +10854,14 @@ def withdraw(amount):
                       >
                         <div className="flex items-start gap-3">
                           <button
-                            onClick={() => tick(id)}
+                            onClick={(e) => tick(id, e.shiftKey)}
                             className={`flex-shrink-0 mt-1 w-5 h-5 rounded border-2 flex items-center justify-center transition ${
                               isChecked
                                 ? "bg-teal-500 border-teal-500"
                                 : "border-zinc-600 hover:border-teal-500 bg-transparent"
                             }`}
-                            aria-label="Mark reviewed"
+                            aria-label="Mark reviewed (Shift+click to toggle a range)"
+                            title="Shift+click to toggle a range"
                           >
                             {isChecked && (
                               <Check
@@ -10898,6 +10926,23 @@ def withdraw(amount):
           Good luck on Monday — you've got this.
         </div>
       </div>
+
+      {/* Footer — author credit */}
+      <footer className="border-t border-zinc-800 mt-8">
+        <div className="max-w-6xl mx-auto px-6 py-6 text-center text-zinc-500 text-xs">
+          Created by{" "}
+          <span className="text-zinc-300 font-medium">Andrei</span>{" "}
+          <span className="text-zinc-700">·</span>{" "}
+          <a
+            href="https://t.me/Suslicke"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-teal-400 hover:text-teal-300 underline-offset-2 hover:underline transition"
+          >
+            @Suslicke
+          </a>
+        </div>
+      </footer>
     </div>
 
     {/* Cookie / analytics consent banner */}
