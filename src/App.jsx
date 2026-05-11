@@ -3911,6 +3911,548 @@ async def main(paths: list[str]) -> Counter:
 - For truly massive scale, don't use Python — use \`zcat ... | grep | awk\`, DuckDB, or a purpose-built log tool`,
         },
         {
+          q: "Memory cost — thread vs process vs coroutine",
+          a: `Each concurrency model pays a very different memory cost per unit of work. Senior interviews love this comparison because it explains *why* you pick one over the other.
+
+| Unit | RAM per unit | 10,000 of them | Notes |
+|---|---|---|---|
+| **OS thread** | ~8 MB stack (default) | ~80 GB virtual | Reserved address space; only touched pages cost real RAM |
+| **Python thread** overhead | ~17 KB beyond stack | dominated by stack | Thread state, locals, ID, lock, etc. |
+| **Process** | ~10-50 MB | ~100-500 GB | Full Python interpreter, modules loaded |
+| **Coroutine** | ~1-3 KB | ~10-30 MB | Just a frame object on the heap |
+
+**Why threads cost 8 MB:** the OS allocates a contiguous stack per thread. Default on Linux = 8 MB (\`ulimit -s\`). It's **virtual** — only pages you actually touch consume RAM. But virtual address space is finite (especially on 32-bit), so reservation matters.
+
+**Tune thread stack:**
+
+\`\`\`python
+import threading
+threading.stack_size(2 * 1024 * 1024)   # 2 MB stacks
+# Must be called BEFORE spawning threads
+\`\`\`
+
+**Why processes cost MUCH more:** each is a complete Python interpreter — every imported module duplicated, every global, parser tables, type system. An "empty" Python process = 10-30 MB. Add pandas/numpy/ML model → 200+ MB BEFORE doing work.
+
+**Why coroutines are tiny:** no OS stack at all. A coroutine is a Python OBJECT holding a frame (locals + bytecode position). When you \`await\`, state is saved INTO the frame and the interpreter moves on.
+
+\`\`\`python
+import asyncio, sys
+async def noop(): await asyncio.sleep(0)
+c = noop()
+sys.getsizeof(c)         # ~200 bytes per coroutine object
+# 100k coroutines fit in ~50 MB. 100k threads = 800 GB virtual reservation.
+\`\`\`
+
+**Decision rule:** for 1000+ concurrent units of work, use **async**. Threads cap at ~few thousand on 64-bit; processes at ~few hundred (and start slowly).`,
+        },
+        {
+          q: "fork vs spawn vs forkserver — multiprocessing start methods",
+          a: `\`multiprocessing\` has three ways to create child processes — each with very different memory and safety trade-offs.
+
+\`\`\`python
+import multiprocessing as mp
+mp.set_start_method("spawn")     # explicit choice
+\`\`\`
+
+**1. fork (default on Linux, UNAVAILABLE on Windows)**
+- **How:** OS \`fork()\` duplicates the parent process. Child starts with the SAME memory (Copy-on-Write).
+- **Pro:** instant start (no re-import, no re-init); inherited memory shared until written
+- **Con:** all parent threads, locks, file descriptors duplicated — dangerous if any were mid-operation
+- **Subtle bug:** on macOS, fork is unsafe with most non-Python libraries (Cocoa, ObjC) → Python 3.8+ defaults to spawn on macOS
+
+**2. spawn (default on macOS/Windows)**
+- **How:** start a fresh Python interpreter, re-import the module, transfer args
+- **Pro:** clean state, safe with threads/locks/SSL/Cocoa
+- **Con:** ~100-500 ms startup per worker; all args must be serializable; GLOBAL state NOT inherited; \`if __name__ == "__main__":\` REQUIRED
+- **Memory hit:** every worker re-imports your full module → reloads pandas, numpy, ML models. 10 workers × pandas (200 MB) = 2 GB before any work.
+
+**3. forkserver (Linux, niche)**
+- **How:** spawn one "fork server" process upfront, fork from it on demand
+- **Pro:** clean state (forks from a minimal process); faster than spawn
+- **Con:** Linux only; extra complexity; still doesn't inherit your main module's loaded data
+
+**Decision matrix:**
+
+| Scenario | Pick |
+|---|---|
+| Linux, no threads in parent, want max speed | fork |
+| Mac, Windows, or have threads | spawn |
+| Linux with threads but want fast worker creation | forkserver |
+| Want shared memory among workers | fork (with numpy/shared_memory tricks) |
+
+**Mitigating spawn's memory cost:**
+- Initialize heavy state ONCE per worker via \`Pool(initializer=...)\`
+- Use \`forkserver\` if you control the platform
+- Share huge data via \`multiprocessing.shared_memory\` (numpy arrays mapped to the same memory region)
+- Or use threads (if I/O-bound) — much cheaper`,
+        },
+        {
+          q: "Why Copy-on-Write breaks in CPython (refcount writes)",
+          a: `\`fork()\` is supposed to be cheap — the OS doesn't actually copy memory, it marks pages as **Copy-on-Write (CoW)**. Only when a child WRITES to a page does the OS make a real copy.
+
+Sounds great. **Then why does fork() in CPython use almost as much memory as a full copy?**
+
+Because **every refcount change writes to the object's memory** — and Python touches refcounts CONSTANTLY:
+
+\`\`\`python
+# After fork(), the child does:
+x = my_list[0]      # ↑ INCREF on my_list[0]  — writes to its refcount header
+                    # ↑ INCREF on my_list itself
+                    # ↑ INCREF on my_list[0] again (binding to x)
+# Every page containing those objects is now MODIFIED → CoW triggers → real copy
+\`\`\`
+
+After a few minutes of running, the child has touched virtually every page that contains commonly-used objects. CoW gives almost zero memory savings in practice.
+
+**Mitigations (Senior-level knowledge):**
+
+**1. Move bulk data into numpy / pyarrow / mmap.** They store data in flat C buffers — no Python objects, no refcount headers, no per-element writes:
+
+\`\`\`python
+import numpy as np
+big_array = np.zeros(10**8, dtype=np.float32)   # 400 MB, fully shared via CoW
+fork_and_use_it_in_workers()
+# Workers read from big_array without dirtying pages
+\`\`\`
+
+**2. \`gc.freeze()\` (3.7+) — move all reachable objects to a "permanent" generation** so the GC stops scanning (and writing to) their headers:
+
+\`\`\`python
+import gc
+gc.freeze()         # call BEFORE forking
+# Workers won't dirty pages on minor GC scans
+\`\`\`
+
+**3. PEP 683 (Python 3.12+): Immortal Objects.** Objects like \`None\`, \`True\`, small ints, interned strings have a sentinel refcount that's never modified. \`INCREF\`/\`DECREF\` are NO-OPs on them — those pages stay shared forever:
+
+\`\`\`python
+import sys
+sys.getrefcount(None)   # 4294967295 on 3.12+ — sentinel value
+\`\`\`
+
+**4. Use \`multiprocessing.shared_memory\`** for the largest mutable data (next card).
+
+**The lesson:** if you fork-and-work with Python objects, expect each worker to use about as much RAM as the parent. Plan accordingly.`,
+        },
+        {
+          q: "Multiprocessing IPC overhead — serialization and shared memory",
+          a: `When you submit work to \`multiprocessing.Pool\`, args are **serialized** in the parent, sent over a pipe/queue, and **deserialized** in the child. For big inputs, this dominates the cost.
+
+**Cost breakdown per task:**
+
+- Serialize: O(size) CPU + memory for the byte buffer
+- Pipe write: O(size) IPC
+- Deserialize in child: O(size) AND allocates fresh objects (no sharing)
+- Return value travels back the same way
+
+**Concrete numbers — sending a 320 MB list:**
+
+\`\`\`python
+import multiprocessing as mp, time
+
+big = list(range(10_000_000))                # ~320 MB of Python ints
+def work(data): return len(data)
+
+t0 = time.perf_counter()
+mp.Pool().apply(work, (big,))
+print(time.perf_counter() - t0)              # ~5-8 seconds — mostly serialization
+\`\`\`
+
+For large data, this overhead can be **10x slower** than threading-with-numpy on the same problem.
+
+**Solutions:**
+
+**1. \`multiprocessing.shared_memory\` (3.8+) — true zero-copy:**
+
+\`\`\`python
+from multiprocessing import shared_memory, Process
+import numpy as np
+
+# Parent
+shm = shared_memory.SharedMemory(create=True, size=4_000_000)
+arr = np.ndarray((1_000_000,), dtype=np.int32, buffer=shm.buf)
+arr[:] = 42
+
+# Child receives shm.name (a string — tiny to serialize)
+def worker(name):
+    sh = shared_memory.SharedMemory(name=name)
+    a = np.ndarray((1_000_000,), dtype=np.int32, buffer=sh.buf)
+    # ... process directly, no copy
+    sh.close()
+
+p = Process(target=worker, args=(shm.name,))
+p.start(); p.join()
+shm.close(); shm.unlink()
+\`\`\`
+
+**2. Memory-map a file** — \`numpy.memmap\` or \`mmap.mmap\`. Shared by virtual memory; OS handles paging.
+
+**3. Send file paths, not data.** Children open the file themselves.
+
+**4. \`multiprocessing.Manager\`** — RPC-based shared objects. EASY but SLOW (every operation is an RPC round-trip). Use only for low-frequency coordination, not bulk data.
+
+**Production rule:** if serialization takes > 100 ms per task, you're using multiprocessing wrong. Switch to shared memory, file paths, or threads.`,
+        },
+        {
+          q: "Coroutine memory model — why so cheap",
+          a: `A coroutine is just a Python OBJECT on the heap — it doesn't have an OS stack at all. That's why you can run 100k of them in a few hundred MB.
+
+**What a coroutine actually holds:**
+
+\`\`\`python
+async def task(url):
+    response = await fetch(url)        # ← state captured here
+    parsed = parse(response)
+    return parsed
+
+c = task("http://x")           # creates coroutine OBJECT, not running yet
+# Memory: ~200 bytes for the coro + a frame holding (url, response, parsed)
+# Locals stored in an array inside the frame, indexed by compile-time slot
+\`\`\`
+
+**Compared to a thread:**
+
+\`\`\`
+Thread:    OS-allocated 8 MB stack (mostly virtual, but reserves address space)
+            + thread-local storage (~16 KB)
+            + thread struct (~17 KB Python-side)
+            + GIL contention overhead
+
+Coroutine: ~200 B coroutine object
+            + ~500 B - 2 KB frame (depending on local vars)
+            + zero kernel state
+\`\`\`
+
+**Why no OS stack is needed:** between \`await\`s, a coroutine doesn't have to "be running." When you \`await\`, the interpreter saves locals + bytecode position INTO the frame object and the loop moves to the next ready task. When resumed, state is restored from the frame.
+
+**Switching is cheap:** awaiting another coroutine is just a function call + state save in Python. Switching threads is an OS context switch (~1-10 μs + cache misses + scheduler).
+
+\`\`\`python
+import asyncio
+
+async def main():
+    tasks = [asyncio.create_task(noop()) for _ in range(100_000)]
+    await asyncio.gather(*tasks)
+
+# Peak memory: ~30 MB. Try with 100k threads: 800 GB virtual reservation, OOM-killed.
+\`\`\`
+
+**Caveat:** if your coroutine has a HUGE local variable (e.g., \`data = pd.read_csv(...)\`), that's held alive across every awaited operation. Memory scales with concurrent coroutines × per-task locals. Stream big data, don't load it into every task.`,
+        },
+        {
+          q: "Event loop internals — selectors and the ready queue",
+          a: `The asyncio event loop is a single thread that runs a tight loop. The mental model is essential for Senior async work.
+
+\`\`\`
+while True:
+    # 1. Run all ready callbacks (drain the ready queue)
+    while self._ready:
+        callback = self._ready.popleft()
+        callback()                              # may schedule more callbacks
+
+    # 2. Compute timeout: time until earliest scheduled timer
+    timeout = next_timer - now()
+
+    # 3. Block in selector (epoll on Linux / kqueue on BSD / IOCP on Windows)
+    #    Returns when I/O is ready or timeout expires
+    events = self._selector.select(timeout)
+
+    # 4. Push I/O callbacks into _ready
+    for fd, event in events:
+        self._ready.append(self._fd_callbacks[fd])
+
+    # 5. Push expired timer callbacks
+    while timer_due():
+        self._ready.append(timer.cb)
+\`\`\`
+
+**Critical insight:** the loop is **single-threaded** and **cooperative**. A coroutine runs from the last \`await\` to the next \`await\`. While that block runs, NOTHING ELSE runs — not other coroutines, not the GC, nothing.
+
+**This is why \`time.sleep(5)\` in an async function is catastrophic:**
+
+\`\`\`python
+async def handler():
+    time.sleep(5)             # ❌ BLOCKS THE LOOP for 5 seconds
+                              # ↑ ALL other coroutines frozen
+                              # ↑ new connections queue in kernel until they overflow
+\`\`\`
+
+**Memory cost of the event loop itself:** tiny. The loop holds:
+- \`_ready\` — deque of callbacks ready NOW
+- \`_scheduled\` — heap of timer callbacks (\`asyncio.sleep\` etc.)
+- \`_fd_callbacks\` — dict {fd: callback}
+- \`_selector\` — OS resource (epoll fd on Linux), basically free in user space
+
+Total event loop overhead ≈ a few KB regardless of number of tasks. Tasks themselves hold their own memory.
+
+**Performance corollary:** \`asyncio.sleep(0)\` yields ONE iteration of the loop — useful for fairness, but it has cost. Avoid in hot inner loops.
+
+**Selector backends and their limits:**
+- \`epoll\` (Linux): O(1) per event, handles millions of fds
+- \`kqueue\` (macOS/BSD): same scaling
+- \`select\` (fallback, Windows old API): O(n) per call, breaks at ~1024 fds
+- \`IOCP\` (Windows modern): used by ProactorEventLoop`,
+        },
+        {
+          q: "asyncio.gather vs as_completed — memory patterns",
+          a: `Both await many coroutines, but with very different memory profiles. Senior production code knows when each is appropriate.
+
+**\`gather\` — buffers ALL results in memory before returning:**
+
+\`\`\`python
+results = await asyncio.gather(*[fetch(u) for u in urls])
+# ↑ Once any task finishes, its result sits in memory until ALL finish
+# ↑ For 10k URLs × ~1 MB each = ~10 GB peak before you can process
+\`\`\`
+
+**\`as_completed\` — yields each result as it arrives:**
+
+\`\`\`python
+for fut in asyncio.as_completed([fetch(u) for u in urls]):
+    result = await fut
+    process(result)      # finish before next yields → memory bounded
+\`\`\`
+
+**Memory comparison for 10k fetches × ~1 MB response:**
+
+| Strategy | Peak memory | Wall time |
+|---|---|---|
+| \`gather\` | ~10 GB | matches slowest task |
+| \`as_completed\` + immediate process | ~100 MB (inflight only) | matches slowest task |
+| \`gather\` with semaphore + per-batch | ~1 GB | similar |
+
+**Bounded concurrency (semaphore) — the production pattern:**
+
+\`\`\`python
+async def bounded_fetch(sem, url):
+    async with sem:
+        return await fetch(url)
+
+sem = asyncio.Semaphore(50)
+tasks = [bounded_fetch(sem, u) for u in urls]
+for fut in asyncio.as_completed(tasks):
+    item = await fut
+    await write_to_disk(item)
+\`\`\`
+
+**Streaming with queues — most controllable:**
+
+\`\`\`python
+async def producer(q, urls):
+    for u in urls:
+        await q.put(u)
+    await q.put(None)        # sentinel
+
+async def worker(in_q, out_q):
+    while (url := await in_q.get()) is not None:
+        out_q.put_nowait(await fetch(url))
+
+# Bounded queues = built-in backpressure (producer waits when full)
+in_q = asyncio.Queue(maxsize=100)
+out_q = asyncio.Queue(maxsize=100)
+\`\`\`
+
+**Rule:** for "fire 10k requests, write results to disk" — NEVER gather everything in memory. Stream with bounded queues.`,
+        },
+        {
+          q: "GIL release intervals — sys.setswitchinterval",
+          a: `The GIL is released periodically so other threads get a chance. Without that, a CPU-bound thread would monopolize the interpreter forever.
+
+**Default since Python 3.2:** check every **5 ms** (\`sys.getswitchinterval() == 0.005\`).
+
+\`\`\`python
+import sys
+sys.getswitchinterval()         # 0.005 — every 5 ms
+sys.setswitchinterval(0.001)    # switch every 1 ms (more responsive, more overhead)
+sys.setswitchinterval(0.1)      # switch every 100 ms (faster single thread, worse latency)
+\`\`\`
+
+**Before 3.2:** the GIL switched every **100 bytecode instructions** — wildly variable real-time (1 μs to many ms depending on which instruction). Caused unfair scheduling, especially for I/O threads competing with CPU threads.
+
+**Important nuances:**
+
+**1. The 5 ms is a CHECK interval, NOT a guarantee.** The thread is asked to drop the GIL at the next safe point (between bytecodes). A C extension that holds the GIL won't release until it explicitly does.
+
+**2. C extensions can hold the GIL for long stretches.** NumPy/Pandas operations explicitly release it for chunks of work. Pure-Python C extensions may not.
+
+**3. I/O syscalls release the GIL explicitly** — this is why threads are useful for I/O-bound work.
+
+**4. "Convoy effect":** if multiple threads contest the GIL, performance can DROP because of thread wake-up overhead. Two CPU-bound threads on one core can be **slower** than one.
+
+\`\`\`python
+import threading, time
+
+def cpu_loop():
+    x = 0
+    for _ in range(50_000_000):
+        x += 1
+
+t0 = time.perf_counter()
+cpu_loop()                                      # ~3 sec
+print("single:", time.perf_counter() - t0)
+
+t0 = time.perf_counter()
+threads = [threading.Thread(target=cpu_loop) for _ in range(2)]
+for t in threads: t.start()
+for t in threads: t.join()
+print("two threads:", time.perf_counter() - t0)  # ~6-8 sec — WORSE than serial
+\`\`\`
+
+**Why slower:** two threads alternate the GIL, neither makes faster progress, plus you pay context-switch + cache-miss overhead. For pure-Python CPU work, ONE thread always wins.`,
+        },
+        {
+          q: "ThreadLocal and contextvars — memory and async safety",
+          a: `Sometimes you need per-thread (or per-task) state: request ID, DB transaction, user context. Two main tools — VERY different behavior, often confused.
+
+**\`threading.local()\`** — per-thread storage:
+
+\`\`\`python
+import threading
+ctx = threading.local()
+ctx.user_id = 42        # only visible to current thread
+
+# Each thread has its OWN attribute storage
+# Memory: O(threads × keys × value size)
+\`\`\`
+
+**Trap 1:** thread pools REUSE threads. \`threading.local\` state persists between unrelated requests. Must clean up explicitly.
+
+**Trap 2:** thread-locals on long-lived threads leak as new keys accumulate. A web server with 100 threads and 10 keys each = 1000 entries.
+
+**Trap 3:** **\`threading.local\` is BROKEN for asyncio** — all coroutines on one thread share one local. Two concurrent requests will overwrite each other's "user_id."
+
+**\`contextvars\` (3.7+)** — per-task/per-context storage, async-safe:
+
+\`\`\`python
+from contextvars import ContextVar
+user_id: ContextVar[int] = ContextVar("user_id")
+
+token = user_id.set(42)       # only this task / context sees this
+# ... awaits, other coroutines run, none see this user_id ...
+user_id.get()                 # still 42 in our task
+
+# Backed by an immutable hash-array-mapped trie (HAMT)
+# Copy-on-write — child contexts share unchanged keys
+\`\`\`
+
+**Why contextvars works for async:** each \`asyncio.Task\` captures the current context (a HAMT snapshot) when created. Setting a var inside a task doesn't affect the parent or siblings.
+
+**Memory pattern:** storage is O(unique values set), NOT O(tasks × keys). HAMT shares unchanged structure across contexts — efficient.
+
+**Production wiring (FastAPI / Starlette):**
+
+\`\`\`python
+request_id: ContextVar[str] = ContextVar("request_id", default="-")
+
+@app.middleware("http")
+async def with_request_id(request, call_next):
+    token = request_id.set(uuid.uuid4().hex)
+    try:
+        return await call_next(request)
+    finally:
+        request_id.reset(token)        # critical — explicit cleanup
+
+# Now your logger can do:
+logging.basicConfig(format=f"%(asctime)s [%(message)s] req={request_id.get()}")
+\`\`\`
+
+**Migration rule:** any \`threading.local\` in async code should become \`contextvars.ContextVar\`. Many production logging libraries got this wrong for years (Sentry, structlog) and mixed request IDs across coroutines.`,
+        },
+        {
+          q: "Why threads can stall — GIL convoy and fairness",
+          a: `Even with the 5 ms switch interval, the GIL has fairness issues that hit production code. Senior engineers know to spot them.
+
+**1. The "convoy effect"**
+
+When threads run CPU-bound code on the SAME core, GIL ping-pong causes more harm than good:
+- Thread A drops GIL (signal + futex wait)
+- Thread B wakes up (~5-100 μs)
+- B runs for 5 ms
+- B drops GIL
+- A wakes up, runs for 5 ms
+- ...
+
+Total work is the SAME, but ~10-30% is lost to coordination. Two CPU-bound threads on one core can run **slower** than one thread.
+
+**2. I/O thread starvation under CPU load**
+
+A CPU-bound thread holds the GIL. An I/O-bound thread completes its socket read, but can't process the data — must wait 5 ms (or longer if C code doesn't yield promptly). Tail latencies spike.
+
+**Real symptom:** "my web server is fast at low load, but tail p99 explodes when one user runs a heavy report." → that report's CPU thread is starving the I/O threads.
+
+**Mitigations:**
+
+\`\`\`python
+import sys
+sys.setswitchinterval(0.001)    # 1 ms — more responsive for I/O, more overhead
+
+# Better: offload CPU work to processes
+from concurrent.futures import ProcessPoolExecutor
+with ProcessPoolExecutor() as pool:
+    fut = pool.submit(cpu_heavy)        # runs outside main process's GIL
+
+# Or use a C extension that releases the GIL
+import numpy as np
+np.dot(A, B)                            # releases GIL during BLAS call
+\`\`\`
+
+**3. Python 3.13 free-threaded build (PEP 703) — experimental**
+
+Compile with \`--disable-gil\` (or use \`python3.13t\`) to remove the GIL entirely. Threads achieve true parallelism for pure-Python code, at the cost of:
+
+- ~15-40% single-thread slowdown
+- C extensions need to be recompiled and audited (refcount atomicity)
+- Different memory model — refcounts now atomic operations, more cache traffic
+- Some libraries don't support it yet
+
+\`\`\`bash
+python3.13t -c "import sys; print(sys._is_gil_enabled())"   # False — no GIL
+\`\`\`
+
+Still experimental as of 2026. Will mature over the next few releases. Senior interviews increasingly ask "do you know about no-GIL Python and its trade-offs?"`,
+        },
+        {
+          q: "✅ Good vs ❌ Bad — memory in concurrent code",
+          a: `**✅ Good — stream with bounded queue, share via numpy/shared_memory**
+
+\`\`\`python
+async def pipeline(urls):
+    q: asyncio.Queue = asyncio.Queue(maxsize=100)   # BOUNDED — backpressure
+    async def fetcher():
+        for u in urls:
+            await q.put(await fetch(u))
+        await q.put(None)
+    async def processor():
+        while (item := await q.get()) is not None:
+            await write(item)
+    await asyncio.gather(fetcher(), processor())
+
+# CPU work — share via shared_memory + numpy, not serialization
+shm = SharedMemory(create=True, size=arr.nbytes)
+ref = np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)
+ref[:] = arr
+with ProcessPoolExecutor() as p:
+    p.map(work_on_slice, [(shm.name, i, i+1000) for i in range(0, N, 1000)])
+\`\`\`
+
+**Why:** bounded queues bound memory regardless of producer/consumer speed mismatch. Shared memory avoids serialization roundtrips that can dominate runtime for large data.
+
+**❌ Bad — gather everything, ship big args to workers**
+
+\`\`\`python
+async def fetch_all(urls):
+    return await asyncio.gather(*[fetch(u) for u in urls])
+# 100k urls × 1MB response = 100 GB held in memory before processing
+
+with ProcessPoolExecutor() as p:
+    big_df = pd.read_parquet("...")             # 5 GB
+    p.map(transform, [(big_df, i) for i in range(100)])
+    # ↑ serializes big_df 100 times — 500 GB sent over pipes
+\`\`\`
+
+**Why bad:** \`gather\` materializes every result; one slow task can balloon memory for the whole batch. Sending a 5 GB df 100 times wastes I/O and memory — share via numpy or memory-map the file and send the path.`,
+        },
+        {
           q: "✅ Good vs ❌ Bad — picking the right concurrency tool",
           a: `**✅ Good — Match the tool to the workload**
 
@@ -4005,6 +4547,427 @@ If you make a class mutable and hashable, and mutate it while in a set → corru
         {
           q: "Hash randomization (PYTHONHASHSEED)",
           a: `Since Python 3.3, string hashes are randomized per process to defend against hash-collision DoS attacks. That's why \`hash("abc")\` differs across runs. Set \`PYTHONHASHSEED=0\` to disable for debugging.`,
+        },
+        {
+          q: "Hash function — mathematical properties (deterministic, uniform, avalanche)",
+          a: `A **hash function** maps arbitrary input to a fixed-size integer. A "good" hash has four properties:
+
+**1. Deterministic** — same input → same output (within one process for strings; always for ints)
+**2. Uniform distribution** — outputs spread evenly across the range (no clustering)
+**3. Fast** — O(1) for primitives, O(len) for variable-length inputs
+**4. Avalanche effect** — tiny change in input → completely different output (1 bit flip ≈ half output bits flip)
+
+\`\`\`python
+hash("a")        # e.g. -7659827871024812186 (random per process — SipHash)
+hash("b")        # e.g.  4894659076767988388 — totally different (avalanche)
+hash(1)          # 1   ← int hashes to itself (small int optimization)
+hash(1.0)        # 1   ← MUST equal hash(1) — __eq__/__hash__ contract
+hash(2**61)      # 0   ← collision with 0! ints hash modulo (2^61 - 1) on 64-bit
+\`\`\`
+
+**NOT required of \`hash()\`:** cryptographic security. Python's \`hash()\` is fast but reversible — attackers can craft collisions. For security use \`hashlib.sha256\`, not \`hash()\`.
+
+| Use case | Function |
+|---|---|
+| Dict / set keys | \`hash()\` (built-in, SipHash for str) |
+| Password storage | \`bcrypt\`, \`argon2\`, \`scrypt\` |
+| File checksums | \`hashlib.sha256\` |
+| Anti-tampering | \`hmac.new(...).hexdigest()\` |
+| Bloom filters | \`mmh3\` (MurmurHash3) |`,
+        },
+        {
+          q: "SipHash — what Python uses for strings (anti-DoS)",
+          a: `Since Python 3.4, **string and bytes hashes** are computed with **SipHash** (SipHash-1-3 in 3.13+ for speed; SipHash-2-4 historically). The hash key is randomized per process startup.
+
+**Why the randomization?** Before this, Python used a simple FNV-style hash. An attacker who could choose dict keys (e.g., HTTP form fields, JSON payload keys) could pre-compute thousands of keys that all hash to the same bucket. Inserting them degraded dict lookup from O(1) to O(n) — a **hash-DoS attack**.
+
+\`\`\`bash
+$ python -c "print(hash('attack'))"
+8893741395015456237
+$ python -c "print(hash('attack'))"
+-2491863920128762184          # ← DIFFERENT every run
+\`\`\`
+
+**Disable for reproducibility / debugging:**
+
+\`\`\`bash
+PYTHONHASHSEED=0 python -c "print(hash('a'))"   # same value every run
+PYTHONHASHSEED=42 python script.py              # fixed seed
+\`\`\`
+
+**Key facts:**
+- Only **str, bytes, memoryview** are randomized — \`hash(42)\` is always 42, \`hash((1,2))\` is deterministic
+- The random key is generated ONCE at interpreter start (in \`_Py_HashSecret\`)
+- Inside one process, hashes ARE stable — you can cache them
+- Across processes (including multiprocessing children with \`spawn\`), they differ → don't persist hash values to disk`,
+        },
+        {
+          q: "Hash collisions — why they're inevitable and how dict resolves them",
+          a: `A **collision** = two different keys produce the same hash. Inevitable by **pigeonhole**: \`hash()\` returns a 64-bit int (~10^19 values), but inputs are infinite. So infinite inputs → finite outputs ⇒ collisions exist by mathematical necessity.
+
+Even more practically, \`dict\` maps hash → bucket via \`hash & (table_size - 1)\`. With a table of 8 slots, only the lowest 3 bits of the hash matter → tons of collisions until resize.
+
+**How CPython dict handles collisions: open addressing with perturbation**
+
+CPython dicts use **open addressing** (no linked lists in buckets — store directly in the table). On collision, probe another slot:
+
+\`\`\`
+i = hash(key) & mask          # initial bucket
+perturb = hash(key)
+while slot[i] is occupied and slot[i].key != key:
+    i = (5 * i + 1 + perturb) & mask
+    perturb >>= 5             # gradually shift in high bits of hash
+\`\`\`
+
+The perturbation pulls in **high bits** of the hash, so even keys that collide on the low bits diverge in the probe sequence. This kills adversarial collision attacks.
+
+**Why open addressing (not chaining)?**
+- **Cache locality** — probing neighboring slots = sequential memory access (CPU loves)
+- **No malloc per entry** — chains require heap allocation per bucket
+- Cost: when table is dense, probe chains lengthen → resize at 2/3 full
+
+\`\`\`python
+# You can FORCE collisions to see this:
+class BadHash:
+    def __init__(self, n): self.n = n
+    def __hash__(self): return 0           # everything in bucket 0
+    def __eq__(self, o): return self.n == o.n
+
+d = {BadHash(i): i for i in range(1000)}   # O(n^2) inserts due to probing
+\`\`\``,
+        },
+        {
+          q: "dict internals — compact dict layout (3.6+)",
+          a: `Before Python 3.6, dict was a single sparse hash table — mostly-empty buckets wasted memory but kept lookup fast. In 3.6, CPython adopted Raymond Hettinger's **compact dict** that's BOTH faster AND smaller AND preserves insertion order.
+
+**Old dict (3.5-):**
+\`\`\`
+[empty, empty, (hash,key,val), empty, (hash,key,val), empty, empty, (hash,key,val)]
+       ↑ 24 bytes per slot, mostly wasted
+\`\`\`
+
+**Compact dict (3.6+) — two arrays:**
+\`\`\`
+indices: [-1, -1,  0, -1,  1, -1, -1,  2]    # sparse, but only ints (1/2/4/8 bytes each based on size)
+entries: [(hash_a, key_a, val_a),             # dense — fills in insertion order
+          (hash_b, key_b, val_b),
+          (hash_c, key_c, val_c)]
+\`\`\`
+
+**To look up a key:**
+1. \`i = hash(key) & mask\` → index into \`indices\`
+2. \`idx = indices[i]\` → integer (or -1 if empty)
+3. \`entry = entries[idx]\` → actual (hash, key, value)
+4. Compare \`entry.key == key\`
+
+**Wins:**
+- ~**30% less memory** vs old dict
+- **Iteration order = insertion order** (free side effect; became language guarantee in 3.7)
+- **Cache-friendly iteration** — dense \`entries\` array
+- Trade-off: 2 memory lookups per access (indices → entries), but cache locality wins net
+
+\`\`\`python
+d = {}
+d['a'] = 1
+d['b'] = 2
+d['c'] = 3
+list(d)            # ['a', 'b', 'c'] — guaranteed since 3.7
+del d['b']
+list(d)            # ['a', 'c'] — 'b' slot becomes "DUMMY" in entries (not actually removed)
+\`\`\`
+
+The "DUMMY" tombstone explains why **\`del\` doesn't shrink the dict** — only resize does.`,
+        },
+        {
+          q: "Why dict is a hash map — the full reasoning",
+          a: `**dict IS a hash table** (aka hash map). That's how it achieves **O(1) average lookup, insert, delete**.
+
+**The setup:**
+- A dict is backed by a contiguous array of slots
+- \`hash(key)\` is reduced to an index: \`i = hash(key) & (capacity - 1)\`
+- The slot stores \`(hash, key, value)\` — or, in compact dict, an index into a dense entries array
+
+**The O(1) magic — three contracts must hold:**
+
+| Contract | Why |
+|---|---|
+| Hash is fast (O(1) or O(len(key))) | Otherwise lookup degrades |
+| Hash is uniformly distributed | Else most keys cluster, collisions explode |
+| \`hash(a) == hash(b)\` when \`a == b\` | Else lookup might not find a key that exists |
+
+**Why O(1) AVERAGE, not worst case:**
+- With a good hash + load factor < 2/3, collision chains are ~O(1) length
+- Adversarial keys (all hash to same bucket) → worst case O(n) per op
+- Python's SipHash + per-process random key + perturbation kills the adversarial case for str/bytes
+
+**Lookup walkthrough (\`d["alice"]\`):**
+
+\`\`\`
+1. h = hash("alice")              # SipHash, ~50ns
+2. i = h & (capacity - 1)         # initial bucket
+3. slot = table[i]
+4. if slot.is_empty: raise KeyError
+5. if slot.hash == h and slot.key == "alice":   # compare hash first (cheap), then key
+       return slot.value
+6. else: perturb-probe to next slot, goto 3
+\`\`\`
+
+**Comparison with other structures:**
+
+| Structure | Lookup | Insert | Memory |
+|---|---|---|---|
+| dict (hash map) | O(1) avg | O(1) amortized | ~64+24n bytes |
+| list (linear) | O(n) | O(1) append | ~56+8n bytes |
+| sorted list (binary search) | O(log n) | O(n) | small |
+| tree (red-black, treap) | O(log n) | O(log n) | larger |
+
+For lookup-heavy workloads, dict wins. For "stay sorted, frequent insertion in middle" use \`sortedcontainers.SortedDict\` (B-tree-like).`,
+        },
+        {
+          q: "Dict resize — load factor and rehash mechanics",
+          a: `When a dict gets too full, CPython resizes it (rehashes everything into a bigger table). Without this, collision chains would dominate and lookups would degrade.
+
+**Trigger: 2/3 full** — when \`used > capacity * 2/3\`, dict grows.
+
+**Growth strategy (CPython source, \`dictobject.c\`):**
+- New size = \`used * 4\` for dicts under ~50,000 items (aggressive — avoids frequent resizes)
+- New size = \`used * 2\` above that threshold
+
+The next power of 2 ≥ this number becomes the actual capacity.
+
+\`\`\`python
+import sys
+d = {}
+prev = 0
+for i in range(40):
+    d[i] = i
+    sz = sys.getsizeof(d)
+    if sz != prev:
+        print(f"len={len(d)}, size={sz}")    # see the jumps at resize
+        prev = sz
+\`\`\`
+
+**Cost of a single resize: O(current_size)** — every entry rehashed and reinserted.
+**Amortized cost of insert: O(1)** — resizes happen geometrically (4x growth → log4(n) resizes total).
+
+**Critical: \`del\` does NOT shrink.**
+\`\`\`python
+big = {i: i for i in range(10**6)}
+sys.getsizeof(big)        # ~36 MB
+for k in list(big):
+    if k > 10:
+        del big[k]
+sys.getsizeof(big)        # STILL ~36 MB — only resize-up shrinks
+\`\`\`
+
+**Why:** deletion leaves a "DUMMY" tombstone in the slot. The dict shrinks only via resize, which happens on insert that triggers the 2/3 threshold AGAIN (rare for a shrunk dict).
+
+**Force shrink:** rebuild the dict — \`big = dict(big)\` or \`big = {k: big[k] for k in big}\`.`,
+        },
+        {
+          q: "Why hash(1) == hash(1.0) == hash(True) — and other numeric quirks",
+          a: `Python's \`__hash__\` contract: **if \`a == b\` then \`hash(a) == hash(b)\`**.
+
+Since \`1 == 1.0 == True\` (numeric equality across types), their hashes MUST match. This is a deliberate language design choice that has surprising consequences.
+
+\`\`\`python
+hash(1)              # 1
+hash(1.0)            # 1
+hash(True)           # 1
+hash(1 + 0j)         # 1   ← complex too
+from decimal import Decimal
+hash(Decimal("1"))   # 1   ← even Decimal
+from fractions import Fraction
+hash(Fraction(1, 1)) # 1
+
+d = {1: "int"}
+d[True] = "bool"      # OVERWRITES — same hash, same eq
+d[1.0] = "float"      # OVERWRITES again
+d                     # {1: "float"} — only one entry!
+len({1, True, 1.0, 1+0j})  # 1, not 4
+\`\`\`
+
+**Production bug pattern:**
+\`\`\`python
+counts = {True: 0, 1: 0, 1.0: 0}        # NOT 3 keys — just one!
+len(counts)                              # 1
+
+# Or with json keys:
+data = json.loads('{"1": "a"}')          # {"1": "a"}  ← str key
+data[1] = "b"
+data                                     # {"1": "a", 1: "b"}  ← TWO keys (str != int)
+\`\`\`
+
+**Why \`hash(-1) == hash(-2) == -2\`?** \`-1\` is the reserved sentinel for hash errors (CPython's C internals return \`-1\` to signal "hash failed"). Any \`__hash__\` returning \`-1\` is silently remapped to \`-2\`.
+
+\`\`\`python
+class Sneaky:
+    def __hash__(self): return -1
+hash(Sneaky())        # -2  ← silently remapped
+\`\`\`
+
+**Big int hash quirk:** CPython hashes ints by \`x mod (2^61 - 1)\` on 64-bit. So \`hash(2**61 - 1) == hash(0) == 0\`. Not a problem in practice — collision resolution handles it.`,
+        },
+        {
+          q: "Set vs dict — same hash table internally?",
+          a: `Yes — \`set\` and \`dict\` share **the same hash-table foundation**, but with different layouts.
+
+| | \`dict\` | \`set\` |
+|---|---|---|
+| Layout (3.6+) | **Compact** (indices + dense entries) | **Sparse** (hash + key in slot) |
+| Stores values? | yes | no (key only) |
+| Insertion order | **preserved** | **NOT preserved** |
+| Bucket entry size | ~24 bytes (hash, key, val) | ~16 bytes (hash, key) |
+| Resize threshold | 2/3 full | 2/3 full (same) |
+| Empty memory | 64 bytes | 216 bytes (sparse pre-allocation) |
+
+\`\`\`python
+s = set()
+s.add('c'); s.add('a'); s.add('b')
+list(s)         # could be ['a', 'b', 'c'] — order is NOT guaranteed
+
+d = {}
+d['c'] = 0; d['a'] = 0; d['b'] = 0
+list(d)         # ['c', 'a', 'b'] — guaranteed insertion order
+\`\`\`
+
+**Why didn't set adopt compact layout?** Sets are optimized for **membership testing**, not iteration. The compact layout helps iteration but slightly slows lookup (two memory loads instead of one). The team kept set's sparse layout for that single-load advantage.
+
+**Practical implications:**
+
+\`\`\`python
+# "Unique items, preserving order" → use dict, not set
+list(dict.fromkeys([3, 1, 4, 1, 5]))   # [3, 1, 4, 5] — order preserved
+list(set([3, 1, 4, 1, 5]))             # {1, 3, 4, 5} — order arbitrary
+
+# "Membership tests" → set (or frozenset for immutability + faster lookup)
+active = set(active_user_ids)           # use this
+if user_id in active: ...
+
+# "Hashable container of unique items" → frozenset
+cache = {frozenset(tags1): result1, frozenset(tags2): result2}
+\`\`\``,
+        },
+        {
+          q: "Where hash() is used internally in Python (beyond dict/set)",
+          a: `\`hash()\` is the bedrock of many Python internals — far beyond just dict/set.
+
+| Component | Uses hash for |
+|---|---|
+| \`dict\`, \`set\`, \`frozenset\` | key lookup |
+| \`@functools.lru_cache\` / \`@cache\` | cache key from \`(args, frozenset(kwargs.items()))\` |
+| \`sys.intern()\` | interned-string deduplication (internal dict) |
+| \`sys.modules\` | module cache (dict) |
+| Class \`__dict__\` | every class's attribute namespace |
+| Instance \`__dict__\` | every instance's attribute storage |
+| String comparison shortcut | \`hash(a) != hash(b)\` ⇒ skip full compare (used in C code) |
+| copy.deepcopy memo | avoid duplicating cycles |
+| Type \`MRO\` cache | speed up attribute lookup |
+
+**\`hash()\` vs \`hashlib\` — totally different beasts:**
+
+\`\`\`python
+hash("hello")                                    # ~64-bit, fast, process-local SipHash
+import hashlib
+hashlib.sha256(b"hello").hexdigest()             # 256-bit, slow, stable across runs, cryptographic
+\`\`\`
+
+**Quick reference:**
+
+| Need | Use |
+|---|---|
+| dict key, in-memory only | \`hash()\` |
+| Cache key, in-memory only | \`hash()\` via \`@lru_cache\` |
+| File deduplication on disk | \`hashlib.sha256\` |
+| Password storage | \`bcrypt\` / \`argon2\` |
+| Bloom filters, sketches | \`mmh3\` (MurmurHash3) — fast, non-crypto, no per-process randomization |
+| Authenticated MAC | \`hmac\` |
+| Probabilistic dedup at scale | \`xxhash\` (32-bit, very fast) |
+
+**Production gotcha:** if you put \`hash(x)\` values into a database or send them between processes, you're storing **garbage**. They're random per process. Use \`hashlib\` for cross-process or persisted hash values.`,
+        },
+        {
+          q: "Custom __hash__ — pitfalls and best practices",
+          a: `Writing \`__hash__\` is full of subtle traps. Here are the rules and the failure modes.
+
+**The rules:**
+1. **Consistency with \`__eq__\`:** \`a == b\` ⇒ \`hash(a) == hash(b)\` (the reverse need NOT hold)
+2. **Stability:** hash of a "live in dict" object must not change
+3. **Return type:** must be \`int\` (any int; Python masks to platform-size internally)
+4. **Avoid \`-1\` directly:** silently remapped to \`-2\` (not a bug, just trivia)
+
+**Failure modes:**
+
+\`\`\`python
+# ❌ 1) Hashable but mutable — corruption
+class Vec:
+    def __init__(self, x, y): self.x, self.y = x, y
+    def __eq__(self, o): return (self.x, self.y) == (o.x, o.y)
+    def __hash__(self): return hash((self.x, self.y))
+
+v = Vec(1, 2)
+s = {v}
+v.x = 99                       # hash(v) changes — set is now corrupt
+v in s                         # False (!), but s still contains v
+list(s)[0] is v                # True
+\`\`\`
+
+\`\`\`python
+# ❌ 2) Overriding __eq__ without __hash__ → silently unhashable
+class Point:
+    def __init__(self, x, y): self.x, self.y = x, y
+    def __eq__(self, o): return self.x == o.x and self.y == o.y
+# Python auto-sets __hash__ = None when __eq__ is overridden
+{Point(1, 2)}                  # TypeError: unhashable type: 'Point'
+\`\`\`
+
+\`\`\`python
+# ❌ 3) Hash that depends on too few fields → collision flood
+class User:
+    def __eq__(self, o): return self.id == o.id
+    def __hash__(self): return self.id % 10     # only 10 distinct hashes!
+# 1M users in a dict → 100k collisions per bucket → O(n) ops
+\`\`\`
+
+\`\`\`python
+# ❌ 4) Hash that does I/O / has side effects
+class Lazy:
+    def __hash__(self):
+        return hash(self.load_from_db())        # slow + non-deterministic if DB changes
+\`\`\`
+
+**✅ Best practice — \`@dataclass(frozen=True)\`:**
+
+\`\`\`python
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Coord:
+    x: int
+    y: int
+    # auto: __eq__ from all fields, __hash__ from tuple of fields
+    # frozen=True → __setattr__ raises → can't mutate
+
+c = Coord(1, 2)
+{c}                            # works
+c.x = 99                       # FrozenInstanceError
+\`\`\`
+
+**Manual implementation idioms:**
+
+\`\`\`python
+class Card:
+    __slots__ = ("rank", "suit")
+    def __init__(self, rank, suit):
+        self.rank, self.suit = rank, suit
+    def __eq__(self, o):
+        if not isinstance(o, Card): return NotImplemented
+        return self.rank == o.rank and self.suit == o.suit
+    def __hash__(self):
+        return hash((type(self), self.rank, self.suit))   # include type to avoid cross-class collisions
+\`\`\`
+
+**\`type(self)\` in hash** prevents \`Card(1, "H") == OtherType(1, "H")\` weirdness if subclasses appear.`,
         },
         {
           q: "✅ Good vs ❌ Bad — making an object hashable",
@@ -4224,6 +5187,549 @@ finally:
 \`\`\`
 
 **Interview answer:** "I can't replace CPython's GC, but for production resource management I use context managers for deterministic cleanup, \`weakref\` for caches, object pools for expensive resources like DB connections, and I tune \`gc\` thresholds or toggle collection for latency-sensitive paths."`,
+        },
+        {
+          q: "PyObject — anatomy of a Python object in memory",
+          a: `Every Python object — even \`int(42)\` — has a fixed header (\`PyObject\`) on the heap:
+
+\`\`\`c
+// CPython's object.h (simplified)
+typedef struct _object {
+    Py_ssize_t ob_refcnt;       // reference count — 8 bytes
+    PyTypeObject *ob_type;      // pointer to type — 8 bytes
+    // ... then type-specific fields
+} PyObject;
+\`\`\`
+
+So **every object pays a 16-byte tax** just to exist (refcount + type pointer). Type-specific data piles on top:
+
+\`\`\`python
+import sys
+
+sys.getsizeof(0)            # 24 bytes — int(0) special-case
+sys.getsizeof(1)            # 28 bytes — int with one "digit" slot
+sys.getsizeof(2**1000)      # 160 bytes — big int = more digit slots
+sys.getsizeof("")           # 49 bytes — str header + capacity + null term
+sys.getsizeof("a")          # 50 bytes — +1 char
+sys.getsizeof([])           # 56 bytes — empty list (header + capacity ptr)
+sys.getsizeof({})           # 64 bytes — empty dict
+sys.getsizeof(set())        # 216 bytes — empty set (sparse hash table)
+sys.getsizeof((1,))         # 56 bytes — tuple of one item
+sys.getsizeof(object())     # 16 bytes — pure PyObject (no fields)
+\`\`\`
+
+**Production implication:**
+- 1 million tiny Python objects ≈ 30+ MB just in headers
+- Use \`array.array\`, \`numpy\`, \`__slots__\` or pyarrow when storing millions of homogeneous values
+- A \`numpy.int64\` array of 1M = 8 MB. A Python list of 1M ints = ~70 MB.
+
+**This is the core reason for "Python is memory-hungry":** every value is a fat boxed object.`,
+        },
+        {
+          q: "Why an int takes 28 bytes (and what determines the size)",
+          a: `Python \`int\` is **arbitrary-precision** — no 32/64-bit limit. You pay for that flexibility in memory.
+
+\`\`\`python
+import sys
+sys.getsizeof(0)          # 24 bytes (special case — empty digit array)
+sys.getsizeof(1)          # 28 bytes (1 "digit" slot)
+sys.getsizeof(2**30 - 1)  # 28 bytes (still fits in one 30-bit digit)
+sys.getsizeof(2**30)      # 32 bytes (2 digit slots)
+sys.getsizeof(2**62)      # 36 bytes (3 digit slots)
+sys.getsizeof(2**1000)    # 160 bytes
+\`\`\`
+
+**Layout for \`int(1)\` — 28 bytes:**
+- \`ob_refcnt\` — 8 bytes
+- \`ob_type\` — 8 bytes (pointer to \`PyLong_Type\`)
+- \`ob_size\` — 8 bytes (digit count; sign encodes int sign)
+- \`ob_digit[0]\` — 4 bytes (the actual value)
+- = 28 bytes (no padding needed)
+
+CPython stores ints as base-2³⁰ "digits" — each ~30 bits. \`2**1000\` needs \`ceil(1000/30) = 34\` digits.
+
+**Small int cache:** ints in **\`-5..256\`** are **pre-allocated at interpreter startup** and reused.
+
+\`\`\`python
+a = 200; b = 200
+a is b              # True (cached) — same object
+a = 300; b = 300
+a is b              # False (typically) — fresh allocations
+\`\`\`
+
+**Why \`-5..256\`?** Empirically common values — loop counters, small math, ASCII codes, \`-1\` sentinel, single-digit returns. The cache is a flat C array; lookups are O(1) pointer math.
+
+**Practical impact:**
+- 1M Python ints in a list: \`28 × 1M + list overhead\` ≈ 35 MB
+- 1M ints in \`array.array('q')\` (int64): 8 MB
+- 1M ints in \`numpy.int64\`: 8 MB
+- Same data, 4x memory difference`,
+        },
+        {
+          q: "pymalloc — CPython's small-object allocator",
+          a: `When you create a small object, CPython does NOT call \`malloc\` directly. Instead it uses **pymalloc**, a custom allocator optimized for many small short-lived objects.
+
+**Hierarchy (three-level):**
+
+\`\`\`
+Arena   = 256 KB block requested from OS (via mmap on Linux, VirtualAlloc on Windows)
+  Pool  = 4 KB sub-chunks, each devoted to ONE size class
+    Block = fixed-size slot (8, 16, 24, ..., 512 bytes — multiples of 8)
+\`\`\`
+
+**Rules:**
+- Objects **≤ 512 bytes** → pymalloc (block in a pool in an arena)
+- Objects **> 512 bytes** → straight to system \`malloc\`
+- Each pool serves ONE size class. No fragmentation inside a pool.
+
+**Why pymalloc exists:**
+- Allocating millions of small Python objects is FAST because pymalloc avoids syscall overhead per object
+- The free/alloc cycle stays in user space; only "need new arena" hits the OS
+
+**The infamous "Python doesn't release memory" problem:**
+
+**Arenas are never returned to the OS until they're 100% empty.** A long-running process that briefly held 10M objects keeps memory reserved — even after \`del\` and \`gc.collect()\`.
+
+\`\`\`python
+import gc
+big = [object() for _ in range(10_000_000)]   # ~ 600 MB
+del big
+gc.collect()
+# RSS still shows 600 MB held — arenas not yet empty
+\`\`\`
+
+**Mitigations:**
+- **Worker recycling:** \`gunicorn --max-requests 1000\` restarts workers periodically
+- **Move big jobs to subprocesses** — the OS reclaims all memory on exit
+- **\`PYTHONMALLOC=malloc\`** — bypass pymalloc, use glibc malloc (releases more aggressively via \`MADV_DONTNEED\`)
+- **Use numpy / pyarrow** for bulk data — they live OUTSIDE pymalloc and release cleanly
+
+\`\`\`python
+import sys
+sys.getallocatedblocks()    # currently allocated pymalloc blocks (debugging)
+\`\`\``,
+        },
+        {
+          q: "Free lists — int, float, tuple, frame object reuse",
+          a: `Beyond pymalloc, CPython caches **deallocated objects of certain types** in **free lists** — so the next allocation reuses an existing slot instead of building a new object.
+
+**Types with free lists (CPython 3.x):**
+- \`int\` — small int cache (\`-5..256\`, permanent at startup)
+- \`float\` — free list of up to 100 deallocated floats
+- \`tuple\` — one free list per size (tuples of 0, 1, 2, ..., 19 elements)
+- \`frame\` — function call frames pooled
+- \`list\` — small empty/freed lists pooled
+- \`dict\` — small dicts pooled
+- \`bound method\` — wrapper objects pooled
+
+\`\`\`python
+# Demonstration — same memory address reused
+a = 3.14
+addr_a = id(a)
+del a
+b = 2.71
+id(b) == addr_a       # often True — free list returned the slot
+\`\`\`
+
+**Why this matters:**
+- Hot allocation loops (\`for i in range(1_000_000): x = i * 1.0\`) are much cheaper than they would be with raw malloc — most floats recycled
+- Explains "why pure-Python numeric loops aren't as slow as raw malloc would suggest"
+- A subtle bug: capturing many "throwaway" objects in lists/closures defeats the free list → memory balloons
+
+**Free-list inspection (CPython internals, not stable):**
+
+\`\`\`python
+# In a debug Python build:
+sys._debugmallocstats()      # prints arena, pool, free-list stats
+\`\`\`
+
+**3.12+ change:** PEP 683 (Immortal Objects) made \`None\`, \`True\`, \`False\`, small ints, interned strings, etc. **immortal** — refcount is frozen at a sentinel value, so refcount changes are no-ops. Free lists for those types are unnecessary.`,
+        },
+        {
+          q: "__slots__ — saving memory by avoiding __dict__",
+          a: `By default, every Python instance has a \`__dict__\` to store attributes — dynamic and flexible, but a fat ~120-byte overhead per instance for an empty dict.
+
+\`__slots__\` tells Python: "this class has a FIXED set of attributes; store them in a tuple-like array, NOT a dict."
+
+\`\`\`python
+class WithoutSlots:
+    def __init__(self, x, y, z):
+        self.x = x; self.y = y; self.z = z
+
+class WithSlots:
+    __slots__ = ("x", "y", "z")
+    def __init__(self, x, y, z):
+        self.x = x; self.y = y; self.z = z
+
+import sys
+o1 = WithoutSlots(1, 2, 3)
+sys.getsizeof(o1)              # 48 bytes (instance only)
+sys.getsizeof(o1.__dict__)     # 296 bytes extra
+# TOTAL: ~344 bytes
+
+o2 = WithSlots(1, 2, 3)
+sys.getsizeof(o2)              # 64 bytes — TOTAL (no separate dict)
+\`\`\`
+
+**Savings:** for 10M instances, regular class ≈ 3.4 GB; with slots ≈ 640 MB. Real-world impact in ML pipelines, graph algorithms, simulations.
+
+**Trade-offs:**
+- ❌ Can't add new attributes dynamically: \`obj.new_attr = 5\` → \`AttributeError\`
+- ❌ Inheritance pitfall — every parent in the chain must also use slots, or you get \`__dict__\` back (silently)
+- ❌ No \`weakref\` by default — add \`"__weakref__"\` to \`__slots__\` if you need it
+- ❌ Multiple inheritance with two slotted bases of different layouts is rejected
+- ✅ Attribute access is ~25% faster (array index vs hash lookup)
+- ✅ Smaller memory footprint, friendlier to CPU caches
+
+**\`@dataclass(slots=True)\` (3.10+) — best ergonomics:**
+
+\`\`\`python
+from dataclasses import dataclass
+
+@dataclass(slots=True)
+class Point:
+    x: float
+    y: float
+# Auto: __slots__, __init__, __eq__, __repr__, no __dict__
+\`\`\`
+
+**When to use:** value objects, large quantities (millions of), tight inner loops. NOT for ad-hoc config classes.`,
+        },
+        {
+          q: "sys.getsizeof — what it does and doesn't measure",
+          a: `\`sys.getsizeof(obj)\` returns the size of the object's **own immediate allocation** — NOT what it transitively holds.
+
+\`\`\`python
+import sys
+
+lst = [1, 2, 3]
+sys.getsizeof(lst)        # 88 bytes — list header + pointer array
+# But actual memory ALSO includes:
+#   - 3 int objects (28 bytes each = 84 bytes)
+#   - Nothing else, but the dict-of-classes for type lookups, etc.
+
+# Nested structures get really misleading:
+data = {"users": [{"name": "Alice"}, {"name": "Bob"}]}
+sys.getsizeof(data)       # ~232 bytes — JUST the outer dict
+# Reality: outer dict + list + 2 inner dicts + 2 strings + ... ≈ 600+ bytes
+\`\`\`
+
+**Deep size — recursive walker:**
+
+\`\`\`python
+def deep_size(obj, seen=None):
+    seen = seen if seen is not None else set()
+    if id(obj) in seen: return 0
+    seen.add(id(obj))
+    size = sys.getsizeof(obj)
+    if isinstance(obj, dict):
+        size += sum(deep_size(k, seen) + deep_size(v, seen) for k, v in obj.items())
+    elif isinstance(obj, (list, tuple, set, frozenset)):
+        size += sum(deep_size(i, seen) for i in obj)
+    return size
+
+deep_size(data)           # the actual full bill
+\`\`\`
+
+Or use the off-the-shelf:
+
+\`\`\`python
+from pympler import asizeof
+asizeof.asizeof(data)     # ~640 bytes — recursive, accurate
+\`\`\`
+
+**Also doesn't measure:**
+- **C-extension internals** — \`sys.getsizeof(numpy_array)\` ≪ \`arr.nbytes\`. NumPy stores data in a malloc'd buffer outside Python's view.
+- **Lazy / shared storage** — Pandas DataFrame can share columns; \`getsizeof\` counts the wrapper only
+- **Memory-mapped files** — return 0 or tiny number; data lives in OS page cache
+
+**Interview-friendly summary:** \`sys.getsizeof\` is a quick first check; for real memory analysis use \`tracemalloc\` (allocation tracing), \`pympler.asizeof\` (deep sizing), or \`objgraph\` (reference graphs).`,
+        },
+        {
+          q: "tracemalloc — finding memory leaks",
+          a: `**\`tracemalloc\`** is built-in (no install) — it records every Python allocation with full traceback. The single best tool for "where is memory going?"
+
+\`\`\`python
+import tracemalloc
+
+tracemalloc.start(10)         # capture 10 frames of traceback per allocation
+
+# ... run your code ...
+
+snapshot = tracemalloc.take_snapshot()
+
+# Top 10 lines by allocated size
+for stat in snapshot.statistics("lineno")[:10]:
+    print(stat)
+# myapp/processor.py:42: size=12.3 MiB, count=124589, average=104 B
+
+# Compare two snapshots to find growth
+before = tracemalloc.take_snapshot()
+do_work()
+after = tracemalloc.take_snapshot()
+for stat in after.compare_to(before, "lineno")[:10]:
+    print(stat)
+# myapp/cache.py:88: size=+8.2 MiB (+8.2 MiB), count=+5012 (+5012)
+\`\`\`
+
+**Production setup (enable from start):**
+
+\`\`\`bash
+PYTHONTRACEMALLOC=10 python app.py    # 10-frame depth, captured from import time
+\`\`\`
+
+**Trade-offs:**
+- ✅ Built-in, accurate, line-level attribution
+- ✅ Can group by filename, line, or full traceback
+- ❌ ~20-30% slowdown — fine for staging/profiling, NOT for prod
+- ❌ Tracks **allocations**, not **retention** — doesn't show "why is this still alive"
+
+**For retention/reference-graph questions, use \`objgraph\`:**
+
+\`\`\`python
+import objgraph
+objgraph.show_growth(limit=10)         # what types grew since last call
+objgraph.show_backrefs(some_obj, max_depth=5, filename="why_alive.png")
+# Renders a PNG of "who's pointing at this object"
+\`\`\`
+
+**Workflow:**
+1. \`tracemalloc\` → find allocation hotspot
+2. \`objgraph\` on the leaked object → find what's keeping it alive
+3. Fix (clear cache, switch to weakref, break cycle)`,
+        },
+        {
+          q: "Common memory leak patterns in Python",
+          a: `Python has GC, but you can still "leak" — keep references alive longer than needed. The top patterns Senior engineers diagnose:
+
+**1. Unbounded caches**
+\`\`\`python
+_cache = {}
+def get(user_id):
+    if user_id not in _cache:
+        _cache[user_id] = load_user(user_id)
+    return _cache[user_id]
+# Grows forever. Fix:
+from functools import lru_cache
+@lru_cache(maxsize=10_000)
+def get(user_id): return load_user(user_id)
+# Or: cachetools.TTLCache for time-based eviction
+\`\`\`
+
+**2. Closures capturing big locals**
+\`\`\`python
+def make_callback(big_df):
+    def cb(): return len(big_df)        # captures big_df FOREVER
+    return cb
+# Fix: extract just what you need
+def make_callback(big_df):
+    n = len(big_df)
+    return lambda: n
+\`\`\`
+
+**3. Global registries / event listeners**
+\`\`\`python
+HANDLERS = []
+def register(fn): HANDLERS.append(fn)   # never garbage collected
+# Fix: weakref.WeakSet, explicit unregister, or context-managed registration
+\`\`\`
+
+**4. Thread-locals on long-lived thread pools**
+\`\`\`python
+_local = threading.local()      # per-thread
+# Web server with 100 worker threads, each stores per-request payload
+# After 1M requests, 100 fat payloads still alive — not GC'd until thread dies
+\`\`\`
+
+**5. Logging holding exception tracebacks**
+\`\`\`python
+try: process(huge_df)
+except Exception:
+    log.exception("oops")        # captures locals → frames → huge_df
+# Now huge_df lives until that log record is flushed/discarded
+# Fix: log.exception("oops: %s", str(e)) — capture string, not frame
+\`\`\`
+
+**6. Async tasks never awaited**
+\`\`\`python
+asyncio.create_task(work())    # task held in event loop's task set
+# If never awaited, references stay until the loop closes
+# Fix: track all tasks, use TaskGroup (3.11+)
+\`\`\`
+
+**7. C-extension leaks (silent)**
+NumPy, Pandas, PyTorch, TF tensors — these allocate OUTSIDE Python's GC. Forgotten GPU tensors → OOM. Use the framework's own tools: \`torch.cuda.memory_summary()\`, \`del tensor; torch.cuda.empty_cache()\`.
+
+**Investigation playbook:**
+1. \`tracemalloc\` snapshots before/after to find allocation hotspots
+2. \`objgraph.show_growth()\` → find unexpectedly growing types
+3. \`gc.get_referrers(obj)\` → who's keeping this alive
+4. \`weakref.ref\` to convert "must hold for performance" → "drop if pressure"`,
+        },
+        {
+          q: "Why a list/dict doesn't shrink on delete (overallocation)",
+          a: `Python's \`list\` and \`dict\` **overallocate** to amortize O(1) growth. Removing items does not reclaim the underlying capacity.
+
+**Lists:**
+
+\`\`\`python
+import sys
+lst = list(range(1000))
+sys.getsizeof(lst)        # ~9000 bytes
+
+del lst[500:]
+sys.getsizeof(lst)        # STILL ~9000 — capacity unchanged
+len(lst)                  # 500
+
+# Force shrink:
+lst = lst.copy()
+sys.getsizeof(lst)        # ~4500 — capacity matches new size
+\`\`\`
+
+**Growth pattern (CPython source, listobject.c):**
+\`\`\`c
+new_allocated = newsize + (newsize >> 3) + 6     // ~ newsize * 1.125 + 6
+\`\`\`
+
+Geometric growth ~12.5% headroom — that's how \`append\` stays O(1) amortized. Every 1.125x boundary triggers a resize (copy to bigger buffer).
+
+**Dicts (similar, plus tombstones):**
+
+\`\`\`python
+big = {i: i for i in range(10**6)}
+sys.getsizeof(big)        # ~36 MB
+for k in list(big)[10:]:
+    del big[k]
+sys.getsizeof(big)        # STILL ~36 MB
+# Deleted slots become DUMMY tombstones — slot reused on next insert but capacity untouched
+\`\`\`
+
+**Why this matters in production:**
+- Long-running queues with churn → use \`collections.deque\` (block-based, releases blocks)
+- Building a huge list then deleting most of it → rebuild: \`small = lst.copy()\`
+- "Streaming through a million items" → use a generator, not a list
+
+**The opposite — preallocating saves resize cost:**
+
+\`\`\`python
+# Slow — many resizes
+result = []
+for i in range(10**6):
+    result.append(transform(i))
+
+# Faster — preallocate
+result = [None] * 10**6
+for i in range(10**6):
+    result[i] = transform(i)
+
+# Or, even cleaner:
+result = list(map(transform, range(10**6)))
+\`\`\``,
+        },
+        {
+          q: "Interning — small ints, short strings, sys.intern()",
+          a: `**Interning** = deduplication. The interpreter keeps a single canonical object for certain immutable values; \`==\` between them becomes pointer comparison.
+
+**What's interned automatically:**
+- Small ints: **\`-5..256\`** (pre-allocated at startup, permanent)
+- Empty bytes/str: \`b""\`, \`""\`
+- Short identifier-like strings (compile-time literals matching \`[A-Za-z0-9_]+\`)
+- Module names, class names, function names
+- Tuples of empty/single-immortal — \`()\`, etc.
+
+\`\`\`python
+a = 256
+b = 256
+a is b              # True — cached
+
+a = 257
+b = 257
+a is b              # False — usually not cached (depends on context)
+
+a = "hello_world"   # interned by compiler (literal, identifier-shape)
+b = "hello_world"
+a is b              # True
+
+a = "hello world"   # space → NOT auto-interned
+b = "hello world"
+a is b              # False (typically)
+\`\`\`
+
+**Force interning explicitly:**
+
+\`\`\`python
+import sys
+a = sys.intern("hello world")     # add to interned dict
+b = sys.intern("hello world")
+a is b                            # True
+\`\`\`
+
+**Production use case — log parser / column-name dedup:**
+
+\`\`\`python
+import sys
+# Without intern: 10M copies of "GET", "POST" — wastes ~500 MB
+events = [parse(line) for line in log]
+event_types = [sys.intern(e.type) for e in events]
+# With intern: 5-10 string objects total
+\`\`\`
+
+**3.12+ Immortal Objects (PEP 683):** \`None\`, \`True\`, \`False\`, small ints, and interned strings now have a "frozen" refcount value. \`Py_INCREF\`/\`DECREF\` on them is a NO-OP, so:
+- They never become collectable
+- Refcount writes don't dirty pages (critical for fork CoW — see Section 6)
+- No more freelists needed for them
+
+**Caveats:**
+- The intern table itself uses memory and **never shrinks**
+- Don't intern unique strings (URLs, UUIDs) — table grows forever
+- Cross-process: interned strings are NOT shared between processes`,
+        },
+        {
+          q: "Memory fragmentation in long-running Python processes",
+          a: `**The classic Python production issue:** RSS (resident set) keeps growing even though Python's heap shows no leak. Why?
+
+**Root cause:** pymalloc allocates 256 KB arenas from the OS. An arena can only be **returned to the OS when 100% empty**. After mixed allocations and frees, even a few live objects per arena keep ALL arenas resident.
+
+\`\`\`
+Initially:  arenas = [FULL, FULL, FULL, FULL, FULL]      (1.25 MB)
+After:      del most of the data
+Result:     arenas = [.x.., x...., ...x., ..x.., ....x]  (still 1.25 MB held)
+                      ↑ one live object per arena = nothing returned
+\`\`\`
+
+**Production symptoms:**
+- Long-running Flask/Django workers slowly grow until OOM-killed
+- "Memory leaks" but \`tracemalloc\` shows no growth in Python objects
+- Restarting workers fixes it
+- The first request after restart is fast, gradually slows under load
+
+**Mitigations:**
+
+**1. Worker recycling (most common fix):**
+\`\`\`bash
+gunicorn --max-requests 1000 --max-requests-jitter 50 app:app
+uwsgi --max-requests 1000 ...
+\`\`\`
+
+**2. Offload big allocations to subprocesses** — OS reclaims everything when the process exits.
+
+**3. \`PYTHONMALLOC=malloc\`** — bypass pymalloc, let glibc handle it (glibc malloc uses \`MADV_DONTNEED\` to release pages).
+
+**4. Use \`mmap\` / numpy / pyarrow for huge data** — these live OUTSIDE pymalloc, released cleanly.
+
+**5. \`gc.collect()\` does NOT help** — it only frees Python objects (which become free blocks inside arenas). Doesn't compact or return arenas.
+
+**Diagnostic:**
+
+\`\`\`python
+import resource, sys, gc
+gc.collect()
+print("python blocks:", sys.getallocatedblocks())
+print("RSS bytes   :", resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024)
+# Big gap between RSS and (blocks × avg block size) = fragmentation, not Python leak
+\`\`\`
+
+**Why malloc's behavior is different:** glibc malloc uses a "main arena" + thread arenas with size-class free lists. It also uses \`mmap\` for big allocations and can release those back via \`munmap\` more aggressively. \`PYTHONMALLOC=malloc\` reduces fragmentation symptoms at the cost of allocation speed.`,
         },
         {
           q: "✅ Good vs ❌ Bad — managing references",
