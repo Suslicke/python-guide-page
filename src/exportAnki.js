@@ -134,7 +134,11 @@ export function buildAnkiTSV(sections, userState = {}) {
       const front = stripTabs(mdToAnkiHtml(item.q));
       const back = stripTabs(mdToAnkiHtml(item.a));
       const tags = [sectionTag, ...lvlTags, ...personalTags(id, userState)].join(" ");
-      const guid = "pyg_" + stableHash(item.q);
+      // GUID is based on the item's position (or its explicit `id` if set),
+      // NOT the question text. This way you can rewrite a question and Anki
+      // will update the same card instead of creating a duplicate. To pin a
+      // card across reordering, add `id: "stable-slug"` to that item.
+      const guid = "pyg_" + stableHash(item.id ?? id);
       rows.push([front, back, tags, guid].join("\t"));
     });
   });
