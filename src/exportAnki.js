@@ -25,32 +25,65 @@ const escapeHtml = (s) =>
 // Code blocks get a `language-*` class so a Prism.js template inside Anki
 // can highlight them. Newlines become <br> at the end because the TSV
 // parser cannot have literal newlines inside a field.
-const BLOCK_OPEN = "@@PYGBLOCK_";
-const BLOCK_CLOSE = "_PYGBLOCK@@";
+const CODE_OPEN = "@@PYGCODE_";
+const CODE_CLOSE = "_PYGCODE@@";
+const TBL_OPEN = "@@PYGTBL_";
+const TBL_CLOSE = "_PYGTBL@@";
+
+// Render a markdown table block (raw lines, all starting with `|`) to HTML.
+// First row becomes <thead>, separator `|---|` is skipped, rest are <tbody>.
+function renderTable(rawLines) {
+  const cells = (line) =>
+    line.replace(/^\|/, "").replace(/\|\s*$/, "").split("|").map((c) => c.trim());
+  const lines = rawLines.filter((l) => l.trim().startsWith("|"));
+  if (lines.length < 2) return rawLines.join("\n");
+  const head = cells(lines[0]);
+  const body = lines.slice(2).map(cells); // skip separator row
+  const th = head.map((c) => `<th>${c}</th>`).join("");
+  const tr = body
+    .map((row) => `<tr>${row.map((c) => `<td>${c}</td>`).join("")}</tr>`)
+    .join("");
+  return `<table><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table>`;
+}
 
 export function mdToAnkiHtml(md) {
   if (!md) return "";
 
-  // 1) Pull fenced code blocks out first so their contents aren't
-  //    mangled by the inline replacements below.
-  const blocks = [];
-  let html = md.replace(/```(\w+)?\n([\s\S]*?)```/g, (_, lang, code) => {
-    const idx = blocks.length;
-    blocks.push(
+  // 1) Strip navigational pointers like "→ See **Section 27**." — these link
+  //    to sections of the source app, not to anything inside Anki.
+  let html = md.replace(/^\s*(?:→|->)?\s*See \*\*Section[^\n]*\n?/gim, "");
+
+  // 2) Extract fenced code blocks before any other rule touches them.
+  const codes = [];
+  html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, (_, lang, code) => {
+    const idx = codes.length;
+    codes.push(
       `<pre><code class="language-${lang || "plain"}">${escapeHtml(code)}</code></pre>`,
     );
-    return `${BLOCK_OPEN}${idx}${BLOCK_CLOSE}`;
+    return `${CODE_OPEN}${idx}${CODE_CLOSE}`;
   });
 
-  // 2) Escape the rest so stray < or & don't break rendering.
+  // 3) Extract markdown tables (contiguous lines starting with `|`). They're
+  //    rendered to HTML now and stashed so escaping below doesn't mangle them.
+  const tables = [];
+  html = html.replace(/(?:^|\n)((?:\|[^\n]*\n?)+)/g, (match, block) => {
+    const lines = block.trim().split("\n");
+    if (lines.length < 2 || !/^\|[\s:-]+\|/.test(lines[1])) return match;
+    const idx = tables.length;
+    tables.push(renderTable(lines));
+    return `\n${TBL_OPEN}${idx}${TBL_CLOSE}\n`;
+  });
+
+  // 4) Escape stray HTML in the remaining markdown text.
   html = escapeHtml(html);
 
-  // 3) Inline formatting.
-  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
+  // 5) Block-level rules (after escape — operate on plain markdown chars).
+  html = html.replace(/^###\s+(.+)$/gm, "<h4>$1</h4>");
+  html = html.replace(/^##\s+(.+)$/gm, "<h3>$1</h3>");
+  html = html.replace(/^#\s+(.+)$/gm, "<h2>$1</h2>");
+  html = html.replace(/(^|\n)\s*---+\s*(?=\n|$)/g, "$1<hr>");
 
-  // 4) Simple bullet lists (`- item`).
+  // 6) Bullet lists (`- item`).
   html = html.replace(/(^|\n)((?:- .+\n?)+)/g, (_, lead, block) => {
     const items = block
       .trim()
@@ -60,13 +93,25 @@ export function mdToAnkiHtml(md) {
     return `${lead}<ul>${items}</ul>`;
   });
 
-  // 5) Put code blocks back in.
-  const blockRe = new RegExp(`${BLOCK_OPEN}(\\d+)${BLOCK_CLOSE}`, "g");
-  html = html.replace(blockRe, (_, i) => blocks[+i]);
+  // 7) Inline formatting.
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
 
-  // 6) Newlines -> <br>. Inside <pre> the browser still respects this
-  //    visually, so code formatting survives.
+  // 8) Restore tables (their HTML must not be touched by the rules above).
+  const tblRe = new RegExp(`${TBL_OPEN}(\\d+)${TBL_CLOSE}`, "g");
+  html = html.replace(tblRe, (_, i) => tables[+i]);
+
+  // 9) Restore code blocks.
+  const codeRe = new RegExp(`${CODE_OPEN}(\\d+)${CODE_CLOSE}`, "g");
+  html = html.replace(codeRe, (_, i) => codes[+i]);
+
+  // 10) Newlines -> <br>. Block-level tags get cleaned up so Anki doesn't
+  //     render extra spacing around tables/lists/code.
   html = html.replace(/\n/g, "<br>");
+  html = html.replace(/<br>\s*(<(?:table|ul|hr|h[2-4]|pre)[ >])/g, "$1");
+  html = html.replace(/(<\/(?:table|ul|h[2-4]|pre)>)\s*<br>/g, "$1");
 
   return html;
 }
@@ -119,30 +164,49 @@ function personalTags(id, { confidence, bookmarks, checked }) {
 // spaces — code blocks normally use spaces anyway.
 const stripTabs = (s) => s.replace(/\t/g, "    ");
 
+// Categories whose items are summaries / cheat-sheets rather than recall
+// prompts ("Q16 — Common coding problems" is a heading, not a question).
+// Items in these sections are skipped from the Anki export by default.
+const EXCLUDED_CATS = new Set(["must"]);
+
 export function buildAnkiTSV(sections, userState = {}) {
   const rows = [
     "#separator:tab",
     "#html:true",
+    "#deck:Python Interview Prep",
     "#tags column:3",
     "#guid column:4",
   ];
+  let included = 0;
+  let skipped = 0;
   sections.forEach((sec, sIdx) => {
+    const sectionExcluded = EXCLUDED_CATS.has(sec.cat);
     const sectionTag = makeTag("python", sec.cat, sec.title);
     const lvlTags = levelTags(sec.level);
     sec.items.forEach((item, i) => {
+      // Skip section-level (summary/cheat-sheet) and per-item opt-outs.
+      if (sectionExcluded || item.noAnki) {
+        skipped++;
+        return;
+      }
       const id = `${sIdx}-${i}`;
       const front = stripTabs(mdToAnkiHtml(item.q));
       const back = stripTabs(mdToAnkiHtml(item.a));
       const tags = [sectionTag, ...lvlTags, ...personalTags(id, userState)].join(" ");
-      const guid = "pyg_" + stableHash(item.q);
+      // GUID is based on the item's position (or its explicit `id` if set),
+      // NOT the question text. This way you can rewrite a question and Anki
+      // will update the same card instead of creating a duplicate. To pin a
+      // card across reordering, add `id: "stable-slug"` to that item.
+      const guid = "pyg_" + stableHash(item.id ?? id);
       rows.push([front, back, tags, guid].join("\t"));
+      included++;
     });
   });
-  return rows.join("\n");
+  return { tsv: rows.join("\n"), included, skipped };
 }
 
 export function downloadAnkiDeck(sections, userState = {}) {
-  const tsv = buildAnkiTSV(sections, userState);
+  const { tsv, included, skipped } = buildAnkiTSV(sections, userState);
   const blob = new Blob([tsv], {
     type: "text/tab-separated-values;charset=utf-8",
   });
@@ -154,5 +218,5 @@ export function downloadAnkiDeck(sections, userState = {}) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
-  return { cardCount: sections.reduce((n, s) => n + s.items.length, 0) };
+  return { cardCount: included, skippedCount: skipped };
 }
