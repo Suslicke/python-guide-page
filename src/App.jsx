@@ -12126,12 +12126,15 @@ async def on_unexpected(request, exc: Exception):
               </button>
               <button
                 onClick={() => {
-                  const { cardCount } = downloadAnkiDeck(sections, {
+                  const { cardCount, skippedCount } = downloadAnkiDeck(sections, {
                     confidence,
                     bookmarks,
                     checked,
                   });
-                  trackEvent("export_anki", { card_count: cardCount });
+                  trackEvent("export_anki", {
+                    card_count: cardCount,
+                    skipped_count: skippedCount,
+                  });
                 }}
                 className="p-2 rounded-md border border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-teal-700 dark:hover:text-teal-300 hover:border-teal-500/60 transition text-[10px] uppercase tracking-wider font-medium inline-flex items-center gap-1.5"
                 aria-label="Export to Anki"

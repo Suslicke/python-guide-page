@@ -119,6 +119,11 @@ function personalTags(id, { confidence, bookmarks, checked }) {
 // spaces — code blocks normally use spaces anyway.
 const stripTabs = (s) => s.replace(/\t/g, "    ");
 
+// Categories whose items are summaries / cheat-sheets rather than recall
+// prompts ("Q16 — Common coding problems" is a heading, not a question).
+// Items in these sections are skipped from the Anki export by default.
+const EXCLUDED_CATS = new Set(["must"]);
+
 export function buildAnkiTSV(sections, userState = {}) {
   const rows = [
     "#separator:tab",
@@ -126,10 +131,18 @@ export function buildAnkiTSV(sections, userState = {}) {
     "#tags column:3",
     "#guid column:4",
   ];
+  let included = 0;
+  let skipped = 0;
   sections.forEach((sec, sIdx) => {
+    const sectionExcluded = EXCLUDED_CATS.has(sec.cat);
     const sectionTag = makeTag("python", sec.cat, sec.title);
     const lvlTags = levelTags(sec.level);
     sec.items.forEach((item, i) => {
+      // Skip section-level (summary/cheat-sheet) and per-item opt-outs.
+      if (sectionExcluded || item.noAnki) {
+        skipped++;
+        return;
+      }
       const id = `${sIdx}-${i}`;
       const front = stripTabs(mdToAnkiHtml(item.q));
       const back = stripTabs(mdToAnkiHtml(item.a));
@@ -140,13 +153,14 @@ export function buildAnkiTSV(sections, userState = {}) {
       // card across reordering, add `id: "stable-slug"` to that item.
       const guid = "pyg_" + stableHash(item.id ?? id);
       rows.push([front, back, tags, guid].join("\t"));
+      included++;
     });
   });
-  return rows.join("\n");
+  return { tsv: rows.join("\n"), included, skipped };
 }
 
 export function downloadAnkiDeck(sections, userState = {}) {
-  const tsv = buildAnkiTSV(sections, userState);
+  const { tsv, included, skipped } = buildAnkiTSV(sections, userState);
   const blob = new Blob([tsv], {
     type: "text/tab-separated-values;charset=utf-8",
   });
@@ -158,5 +172,5 @@ export function downloadAnkiDeck(sections, userState = {}) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
-  return { cardCount: sections.reduce((n, s) => n + s.items.length, 0) };
+  return { cardCount: included, skippedCount: skipped };
 }
