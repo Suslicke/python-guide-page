@@ -173,6 +173,7 @@ export function buildAnkiTSV(sections, userState = {}) {
   const rows = [
     "#separator:tab",
     "#html:true",
+    "#deck:Python Interview Prep",
     "#tags column:3",
     "#guid column:4",
   ];
