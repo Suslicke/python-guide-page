@@ -164,13 +164,10 @@ function personalTags(id, { confidence, bookmarks, checked }) {
 // spaces — code blocks normally use spaces anyway.
 const stripTabs = (s) => s.replace(/\t/g, "    ");
 
-// Categories whose items don't fit the SRS recall model and are skipped
-// from the Anki export by default:
-//   - "must":         Q1–Q20 cheat-sheet (headings, not questions)
-//   - "architecture": 400–700-word design-pattern essays (Saga, CQRS, …);
-//                     these are reference material to look up, not facts
-//                     to drill, and they'd dominate daily review time.
-const EXCLUDED_CATS = new Set(["must", "architecture"]);
+// Categories whose items are summaries / cheat-sheets rather than recall
+// prompts ("Q16 — Common coding problems" is a heading, not a question).
+// Items in these sections are skipped from the Anki export by default.
+const EXCLUDED_CATS = new Set(["must"]);
 
 export function buildAnkiTSV(sections, userState = {}) {
   const rows = [
