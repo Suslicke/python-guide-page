@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useRef, createContext, useContext } from "react";
-import { ChevronRight, ChevronDown, Check, Search, BookOpen, Code2, Cpu, Database, Layers, Lightbulb, Zap, Target, AlertTriangle, Box, GitBranch, Flame, Brain, Terminal, Shield, Package, Sparkles, RotateCcw, X, Command, Cookie, User, Sun, Moon, Bookmark, BookmarkCheck, Eye, EyeOff, Play } from "lucide-react";
+import { ChevronRight, ChevronDown, Check, Search, BookOpen, Code2, Cpu, Database, Layers, Lightbulb, Zap, Target, AlertTriangle, Box, GitBranch, Flame, Brain, Terminal, Shield, Package, Sparkles, RotateCcw, X, Command, Cookie, User, Sun, Moon, Bookmark, BookmarkCheck, Eye, EyeOff, Play, Download } from "lucide-react";
+import { downloadAnkiDeck } from "./exportAnki";
 import { trackEvent, setAnalyticsConsent, setAnalyticsUser } from "./analytics.js";
 
 // Shared across the app so deeply-nested markdown renderers can turn
@@ -12122,6 +12123,22 @@ async def on_unexpected(request, exc: Exception):
               >
                 <Play size={14} />
                 <span className="hidden sm:inline">Quiz</span>
+              </button>
+              <button
+                onClick={() => {
+                  const { cardCount } = downloadAnkiDeck(sections, {
+                    confidence,
+                    bookmarks,
+                    checked,
+                  });
+                  trackEvent("export_anki", { card_count: cardCount });
+                }}
+                className="p-2 rounded-md border border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-teal-700 dark:hover:text-teal-300 hover:border-teal-500/60 transition text-[10px] uppercase tracking-wider font-medium inline-flex items-center gap-1.5"
+                aria-label="Export to Anki"
+                title="Download as Anki-importable .txt (drag into Anki Desktop)"
+              >
+                <Download size={14} />
+                <span className="hidden sm:inline">Anki</span>
               </button>
               <button
                 onClick={toggleBlindMode}
